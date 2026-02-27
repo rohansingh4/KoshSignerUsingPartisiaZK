@@ -1,13 +1,17 @@
-//! Kosh Multi-Key MPC Signer Contract (cggmp21 Threshold ECDSA)
+//! Kosh Multi-Key MPC Signer Contract (k256 ECDSA)
 //!
-//! Coordinates distributed key generation and ECDSA signing across execution engines
-//! using the CGGMP21 threshold ECDSA protocol.
+//! Coordinates key generation and ECDSA signing across execution engines.
 //!
-//! Keygen: Trusted dealer (engine 0) generates all key shares, posts on-chain.
-//! Signing: Real threshold ECDSA via on-chain round message board.
+//! Testnet approach (centralized, WASM-compatible):
+//! - Engine 0 generates a random secp256k1 key pair using k256 (pure Rust)
+//! - Engine 0 directly signs messages — no threshold protocol
+//! - All engines store the full secret key (no real secret sharing)
 //!
-//! NOTE: Keygen uses a trusted dealer for prototype simplicity. Production should
-//! use the full CGGMP21 DKG protocol.
+//! The on-chain state and round-message infrastructure remains in place for a
+//! future upgrade to real threshold ECDSA with WASM-compatible dependencies.
+//!
+//! NOTE: Previously used cggmp21 which depends on gmp-mpfr-sys (C library)
+//! that cannot compile to wasm32-unknown-unknown. Replaced with k256 (pure Rust).
 
 #[macro_use]
 extern crate pbc_contract_codegen;

@@ -1,5 +1,5 @@
-   0.174977250s  INFO prepare_target{force=false package_id=kosh-account-registry v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry) target="kosh_account_registry"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-account-registry v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("kosh_account_registry", ["rlib", "cdylib"], "/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry/src/lib.rs", Edition2021) }
-   0.179093666s  INFO prepare_target{force=false package_id=kosh-account-registry v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry) target="kosh_account_registry"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-account-registry-9cf2fb43f3bbe6e0/test-lib-kosh_account_registry`
+   0.059436500s  INFO prepare_target{force=false package_id=kosh-account-registry v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry) target="kosh_account_registry"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-account-registry v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("kosh_account_registry", ["rlib", "cdylib"], "/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry/src/lib.rs", Edition2021) }
+   0.059954750s  INFO prepare_target{force=false package_id=kosh-account-registry v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry) target="kosh_account_registry"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-account-registry-6140226e0acfb127/lib-kosh_account_registry`
 
 Caused by:
     No such file or directory (os error 2)
@@ -22,8 +22,143 @@ Stack backtrace:
   14: std::rt::lang_start::<()>::{closure#0}
   15: std::rt::lang_start_internal
   16: _main
-   0.211098208s  INFO prepare_target{force=false package_id=kosh-mpc-signer v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer) target="kosh_mpc_signer"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-mpc-signer v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("kosh_mpc_signer", ["rlib", "cdylib"], "/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer/src/lib.rs", Edition2021) }
-   0.211110125s  INFO prepare_target{force=false package_id=kosh-mpc-signer v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer) target="kosh_mpc_signer"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-mpc-signer-89c11a30ce538080/test-lib-kosh_mpc_signer`
+   0.083630042s  INFO prepare_target{force=false package_id=pbc_contract_common v16.126.0 (https://gitlab.com/partisiablockchain/language/contract-sdk.git?tag=v.16.126.0#88a49bd9) target="pbc_contract_common"}: cargo::core::compiler::fingerprint: fingerprint error for pbc_contract_common v16.126.0 (https://gitlab.com/partisiablockchain/language/contract-sdk.git?tag=v.16.126.0#88a49bd9)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("pbc_contract_common", ["lib"], "/Users/rohan/.cargo/git/checkouts/contract-sdk-bdb309921185ffc0/88a49bd/pbc_contract_common/src/lib.rs", Edition2021) }
+   0.083642084s  INFO prepare_target{force=false package_id=pbc_contract_common v16.126.0 (https://gitlab.com/partisiablockchain/language/contract-sdk.git?tag=v.16.126.0#88a49bd9) target="pbc_contract_common"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/pbc_contract_common-ca31346e7eaa938a/lib-pbc_contract_common`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   8: cargo::ops::cargo_compile::compile_ws
+   9: cargo::ops::cargo_compile::compile_with_exec
+  10: cargo::ops::cargo_compile::compile
+  11: cargo::commands::check::exec
+  12: <cargo::cli::Exec>::exec
+  13: cargo::main
+  14: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  15: std::rt::lang_start::<()>::{closure#0}
+  16: std::rt::lang_start_internal
+  17: _main
+   0.084732250s  INFO prepare_target{force=false package_id=pbc_data_types v16.126.0 (https://gitlab.com/partisiablockchain/language/contract-sdk.git?tag=v.16.126.0#88a49bd9) target="pbc_data_types"}: cargo::core::compiler::fingerprint: fingerprint error for pbc_data_types v16.126.0 (https://gitlab.com/partisiablockchain/language/contract-sdk.git?tag=v.16.126.0#88a49bd9)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("pbc_data_types", ["lib"], "/Users/rohan/.cargo/git/checkouts/contract-sdk-bdb309921185ffc0/88a49bd/pbc_data_types/src/lib.rs", Edition2021) }
+   0.084741709s  INFO prepare_target{force=false package_id=pbc_data_types v16.126.0 (https://gitlab.com/partisiablockchain/language/contract-sdk.git?tag=v.16.126.0#88a49bd9) target="pbc_data_types"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/pbc_data_types-0951f43990741489/lib-pbc_data_types`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+   0.085399000s  INFO prepare_target{force=false package_id=k256 v0.13.4 target="k256"}: cargo::core::compiler::fingerprint: fingerprint error for k256 v0.13.4/Check { test: false }/TargetInner { ..: lib_target("k256", ["lib"], "/Users/rohan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/k256-0.13.4/src/lib.rs", Edition2021) }
+   0.085404667s  INFO prepare_target{force=false package_id=k256 v0.13.4 target="k256"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/k256-80a29df5d0bdd7b7/lib-k256`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+   0.086903792s  INFO prepare_target{force=false package_id=ecdsa v0.16.9 target="ecdsa"}: cargo::core::compiler::fingerprint: fingerprint error for ecdsa v0.16.9/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("ecdsa", ["lib"], "/Users/rohan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.16.9/src/lib.rs", Edition2021) }
+   0.086908750s  INFO prepare_target{force=false package_id=ecdsa v0.16.9 target="ecdsa"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/ecdsa-2d84388d53171deb/lib-ecdsa`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+   0.089237292s  INFO prepare_target{force=false package_id=elliptic-curve v0.13.8 target="elliptic_curve"}: cargo::core::compiler::fingerprint: fingerprint error for elliptic-curve v0.13.8/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("elliptic_curve", ["lib"], "/Users/rohan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/elliptic-curve-0.13.8/src/lib.rs", Edition2021) }
+   0.089242334s  INFO prepare_target{force=false package_id=elliptic-curve v0.13.8 target="elliptic_curve"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/elliptic-curve-33155e22146e1fb6/lib-elliptic_curve`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  12: cargo::ops::cargo_compile::compile_ws
+  13: cargo::ops::cargo_compile::compile_with_exec
+  14: cargo::ops::cargo_compile::compile
+  15: cargo::commands::check::exec
+  16: <cargo::cli::Exec>::exec
+  17: cargo::main
+  18: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  19: std::rt::lang_start::<()>::{closure#0}
+  20: std::rt::lang_start_internal
+  21: _main
+   0.094973625s  INFO prepare_target{force=false package_id=kosh-account-registry v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry) target="kosh_account_registry"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-account-registry v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("kosh_account_registry", ["rlib", "cdylib"], "/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry/src/lib.rs", Edition2021) }
+   0.094982875s  INFO prepare_target{force=false package_id=kosh-account-registry v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry) target="kosh_account_registry"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-account-registry-24cd6b6d30981657/test-lib-kosh_account_registry`
 
 Caused by:
     No such file or directory (os error 2)
@@ -46,8 +181,8 @@ Stack backtrace:
   14: std::rt::lang_start::<()>::{closure#0}
   15: std::rt::lang_start_internal
   16: _main
-   0.212372750s  INFO prepare_target{force=false package_id=kosh-vault v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault) target="kosh_vault"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-vault v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("kosh_vault", ["rlib", "cdylib"], "/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault/src/lib.rs", Edition2021) }
-   0.212380791s  INFO prepare_target{force=false package_id=kosh-vault v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault) target="kosh_vault"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-vault-276e31d2c46e763a/test-lib-kosh_vault`
+   0.095472125s  INFO prepare_target{force=false package_id=kosh-mpc-signer v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer) target="kosh_mpc_signer"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-mpc-signer v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("kosh_mpc_signer", ["rlib", "cdylib"], "/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer/src/lib.rs", Edition2021) }
+   0.095479042s  INFO prepare_target{force=false package_id=kosh-mpc-signer v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer) target="kosh_mpc_signer"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-mpc-signer-cc73f4a6db341dc9/lib-kosh_mpc_signer`
 
 Caused by:
     No such file or directory (os error 2)
@@ -70,7 +205,86 @@ Stack backtrace:
   14: std::rt::lang_start::<()>::{closure#0}
   15: std::rt::lang_start_internal
   16: _main
+   0.096158000s  INFO prepare_target{force=false package_id=kosh-mpc-signer v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer) target="kosh_mpc_signer"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-mpc-signer v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("kosh_mpc_signer", ["rlib", "cdylib"], "/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer/src/lib.rs", Edition2021) }
+   0.096163292s  INFO prepare_target{force=false package_id=kosh-mpc-signer v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer) target="kosh_mpc_signer"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-mpc-signer-0fb8f2028573a828/test-lib-kosh_mpc_signer`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.096725375s  INFO prepare_target{force=false package_id=kosh-vault v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault) target="kosh_vault"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-vault v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("kosh_vault", ["rlib", "cdylib"], "/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault/src/lib.rs", Edition2021) }
+   0.096729959s  INFO prepare_target{force=false package_id=kosh-vault v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault) target="kosh_vault"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-vault-b923b98c383f91ca/lib-kosh_vault`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.097276125s  INFO prepare_target{force=false package_id=kosh-vault v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault) target="kosh_vault"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-vault v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("kosh_vault", ["rlib", "cdylib"], "/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault/src/lib.rs", Edition2021) }
+   0.097281375s  INFO prepare_target{force=false package_id=kosh-vault v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault) target="kosh_vault"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rohan/Projects/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-vault-5c2c1a1efd9701f7/test-lib-kosh_vault`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+    Checking elliptic-curve v0.13.8
+    Checking ecdsa v0.16.9
+    Checking k256 v0.13.4
+    Checking pbc_data_types v16.126.0 (https://gitlab.com/partisiablockchain/language/contract-sdk.git?tag=v.16.126.0#88a49bd9)
+    Checking pbc_contract_common v16.126.0 (https://gitlab.com/partisiablockchain/language/contract-sdk.git?tag=v.16.126.0#88a49bd9)
     Checking kosh-account-registry v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-account-registry)
     Checking kosh-mpc-signer v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-mpc-signer)
     Checking kosh-vault v0.1.0 (/Users/rohan/Projects/KoshSignerUsingPartisiaZK/contracts/kosh-vault)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.80s
+error: could not compile `kosh-mpc-signer` (lib) due to 18 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `kosh-mpc-signer` (lib test) due to 18 previous errors

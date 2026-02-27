@@ -1,11 +1,11 @@
-//! Per-key signing computation state for cggmp21-based threshold ECDSA.
+//! Per-key signing computation state for k256 ECDSA.
 //!
-//! Keygen uses trusted dealer (engine 0 generates all shares, posts on-chain).
-//! Signing uses real cggmp21 threshold ECDSA via on-chain round message board.
+//! Testnet: Engine 0 generates key pair, distributes full secret key to all engines,
+//! and signs messages directly. The round-message infrastructure is retained for
+//! future threshold ECDSA upgrade.
 //!
-//! NOTE: Trusted dealer keygen posts key shares on-chain in the clear.
-//! This is acceptable for testnet prototyping only. Production should use
-//! the full CGGMP21 DKG protocol or encrypted share distribution.
+//! NOTE: Secret keys are posted on-chain in the clear — testnet only.
+//! Production should use encrypted share distribution or real threshold DKG.
 
 use create_type_spec_derive::CreateTypeSpec;
 use pbc_contract_common::avl_tree_map::AvlTreeMap;
@@ -42,14 +42,14 @@ pub enum SigningPhase {
     Complete { task_id: u32 },
 }
 
-/// A serialized cggmp21 protocol message posted by an engine.
+/// A serialized protocol message posted by an engine.
 #[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
 pub struct RoundMessage {
     /// Which engine posted this message.
     pub sender: u8,
     /// Protocol round number.
     pub round: u16,
-    /// Serialized cggmp21 protocol message (serde_json bytes).
+    /// Serialized protocol message bytes.
     pub data: Vec<u8>,
     /// Whether this is a broadcast (true) or P2P to a specific engine (false).
     pub is_broadcast: bool,
@@ -142,8 +142,8 @@ pub struct SigningComputationState {
     /// Signing round tracker.
     pub signing_round_tracker: RoundTracker,
 
-    /// Serialized key shares distributed by trusted dealer.
-    /// Index = engine_index, value = serde_json bytes of KeyShare<Secp256k1, SecurityLevel128>.
+    /// Secret key bytes distributed by engine 0.
+    /// Index = engine_index, value = raw 32-byte secret key.
     /// WARNING: These are in the clear on-chain — testnet only!
     pub key_shares: Vec<Option<Vec<u8>>>,
 
