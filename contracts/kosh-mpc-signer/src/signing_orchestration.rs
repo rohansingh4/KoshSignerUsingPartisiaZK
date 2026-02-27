@@ -1,358 +1,256 @@
-//! Per-key signing computation state and on-chain orchestration.
+//! Per-key signing computation state for cggmp21-based threshold ECDSA.
 //!
-//! Manages the MPC protocol state machine for a single key:
-//! - Key generation (engine pub key exchange, secret key share generation, public key assembly)
-//! - Preprocessing (nonce/commitment generation in batches)
-//! - Signing (partial signature assembly)
+//! Keygen uses trusted dealer (engine 0 generates all shares, posts on-chain).
+//! Signing uses real cggmp21 threshold ECDSA via on-chain round message board.
+//!
+//! NOTE: Trusted dealer keygen posts key shares on-chain in the clear.
+//! This is acceptable for testnet prototyping only. Production should use
+//! the full CGGMP21 DKG protocol or encrypted share distribution.
 
 use create_type_spec_derive::CreateTypeSpec;
 use pbc_contract_common::avl_tree_map::AvlTreeMap;
 use read_write_rpc_derive::ReadWriteRPC;
 use read_write_state_derive::ReadWriteState;
 
-use crate::replicated_secret_sharing::{EncodedCurvePoint, ReplicatedSecretShare};
-use crate::task_queue::{EngineIndex, TaskId, TaskQueue};
+use crate::task_queue::EngineIndex;
 
-/// Configuration for preprocessing batch sizes.
-#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
-pub struct PreprocessConfig {
-    /// Number of signing operations to preprocess.
-    pub num_to_preprocess: u32,
-    /// Batch size for preprocessing tasks.
-    pub batch_size: u32,
-}
-
-/// Status of the key generation process.
+/// Key generation phase tracking.
 #[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone, Debug)]
-pub enum KeyGenStatus {
-    /// Waiting for engine public keys to be uploaded.
+pub enum KeyGenPhase {
+    /// Waiting for engine 0 (trusted dealer) to generate and distribute shares.
     #[discriminant(0)]
-    WaitingForEngineKeys {},
-    /// Engine keys received, generating secret key shares.
+    WaitingForDealer {},
+    /// Shares distributed on-chain, engines loading their shares.
     #[discriminant(1)]
-    GeneratingSecretKey {},
-    /// Secret key shares generated, assembling public key.
-    #[discriminant(2)]
-    AssemblingPublicKey {},
+    SharesDistributed {},
     /// Key generation complete, public key available.
-    #[discriminant(3)]
+    #[discriminant(2)]
     Complete {},
 }
 
-/// Status of preprocessing.
+/// Signing phase tracking.
 #[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone, Debug)]
-pub enum PreprocessStatus {
+pub enum SigningPhase {
+    /// No signing in progress.
     #[discriminant(0)]
     Idle {},
+    /// Signing protocol running for a specific task.
     #[discriminant(1)]
-    CalculatingPreprocess {},
+    InProgress { task_id: u32, round: u16 },
+    /// Signing complete for a task.
     #[discriminant(2)]
-    SuccessPreprocess {},
+    Complete { task_id: u32 },
+}
+
+/// A serialized cggmp21 protocol message posted by an engine.
+#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
+pub struct RoundMessage {
+    /// Which engine posted this message.
+    pub sender: u8,
+    /// Protocol round number.
+    pub round: u16,
+    /// Serialized cggmp21 protocol message (serde_json bytes).
+    pub data: Vec<u8>,
+    /// Whether this is a broadcast (true) or P2P to a specific engine (false).
+    pub is_broadcast: bool,
+    /// Target engine index for P2P messages (ignored for broadcast).
+    pub recipient: u8,
+}
+
+/// A pending signing request.
+#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
+pub struct SignRequest {
+    /// Unique task ID for this signing operation.
+    pub task_id: u32,
+    /// The 32-byte message hash to sign (e.g., keccak256 of EVM tx).
+    pub message_hash: Vec<u8>,
 }
 
 /// Information about a completed signing operation.
 #[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
 pub struct SigningInformation {
-    /// The message that was signed.
-    pub message: Vec<u8>,
-    /// The 65-byte ECDSA signature (recovery_id || R || S), if complete.
+    /// The message hash that was signed.
+    pub message_hash: Vec<u8>,
+    /// The ECDSA signature bytes (64 bytes: r || s), if complete.
     pub signature: Option<Vec<u8>>,
+    /// Recovery ID (0 or 1) for EVM v-value derivation.
+    pub recovery_id: u8,
     /// Whether the signature has been verified against the public key.
     pub verified: bool,
 }
 
-/// Preprocessing material for a single signing operation.
-#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
-pub struct PreProcessInformation {
-    /// Preprocess ID.
-    pub id: u32,
-    /// Whether this material has been consumed for a signing operation.
-    pub used: bool,
-}
-
-/// Preprocess state tracking.
+/// Tracks which engines have posted for the current round.
 #[derive(ReadWriteState, CreateTypeSpec, Clone)]
-pub struct PreprocessState {
-    /// Configuration for batch sizes.
-    pub config: PreprocessConfig,
-    /// Current preprocessing status.
-    pub status: PreprocessStatus,
-    /// Counter for next preprocess batch.
-    pub next_preprocess_id: u32,
-    /// Number of preprocessing rounds completed.
-    pub completed_count: u32,
-    /// Number of available (unused) preprocessing materials.
-    pub available_count: u32,
+pub struct RoundTracker {
+    pub posted: Vec<bool>,
+    pub num_engines: u8,
 }
 
-// -- Task definition types for each queue --
+impl RoundTracker {
+    pub fn new(num_engines: u8) -> Self {
+        let mut posted = Vec::new();
+        for _ in 0..num_engines {
+            posted.push(false);
+        }
+        Self {
+            posted,
+            num_engines,
+        }
+    }
 
-/// Task: Engine uploads its ephemeral public key.
-#[derive(ReadWriteState, CreateTypeSpec, Clone)]
-pub struct TaskEngineUploadPublicKey {
-    pub engine_index: EngineIndex,
-}
+    pub fn mark_posted(&mut self, engine_index: u8) {
+        assert!(
+            (engine_index as usize) < self.posted.len(),
+            "Invalid engine index"
+        );
+        assert!(
+            !self.posted[engine_index as usize],
+            "Engine {} already posted for this round",
+            engine_index
+        );
+        self.posted[engine_index as usize] = true;
+    }
 
-/// Task: Engine generates its secret key share.
-#[derive(ReadWriteState, CreateTypeSpec, Clone)]
-pub struct TaskGenerateSecretKey {
-    pub engine_index: EngineIndex,
-}
+    pub fn all_posted(&self) -> bool {
+        self.posted.iter().all(|p| *p)
+    }
 
-/// Task: Preprocessing check phase.
-#[derive(ReadWriteState, CreateTypeSpec, Clone)]
-pub struct TaskPrePrepCheck {
-    pub batch_id: u32,
-    pub batch_size: u32,
-}
+    /// Check if the first `count` engines have posted.
+    pub fn threshold_posted(&self, count: u16) -> bool {
+        self.posted.iter().take(count as usize).all(|p| *p)
+    }
 
-/// Completion data for pre-prep check.
-#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
-pub struct TaskPrePrepCheckCompletion {
-    pub values: Vec<Vec<u8>>,
-}
-
-/// Task: Preprocessing phase.
-#[derive(ReadWriteState, CreateTypeSpec, Clone)]
-pub struct TaskPrep {
-    pub batch_id: u32,
-    pub batch_size: u32,
-}
-
-/// Completion data for preprocessing.
-#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
-pub struct TaskPrepCompletion {
-    pub values: Vec<Vec<u8>>,
-}
-
-/// Task: Multiplication check phase 1.
-#[derive(ReadWriteState, CreateTypeSpec, Clone)]
-pub struct TaskMulCheckOne {
-    pub batch_id: u32,
-}
-
-/// Completion data for mul check 1.
-#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
-pub struct TaskMulCheckOneCompletion {
-    pub value: Vec<u8>,
-}
-
-/// Task: Multiplication check phase 2.
-#[derive(ReadWriteState, CreateTypeSpec, Clone)]
-pub struct TaskMulCheckTwo {
-    pub batch_id: u32,
-}
-
-/// Completion data for mul check 2.
-#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
-pub struct TaskMulCheckTwoCompletion {
-    pub value: Vec<u8>,
-}
-
-/// Task: Sign a message using preprocessed material.
-#[derive(ReadWriteState, CreateTypeSpec, Clone)]
-pub struct TaskSign {
-    pub signing_task_id: TaskId,
-    pub message: Vec<u8>,
-    pub preprocess_id: u32,
-}
-
-/// Completion data for a signing operation.
-#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
-pub struct TaskSignCompletion {
-    pub partial_signature: Vec<u8>,
+    pub fn reset(&mut self) {
+        for p in self.posted.iter_mut() {
+            *p = false;
+        }
+    }
 }
 
 /// The full MPC signing state for a single key.
-///
-/// Each key_id maps to one of these in the contract's AvlTreeMap.
 #[derive(ReadWriteState, CreateTypeSpec)]
 pub struct SigningComputationState {
-    /// The assembled public key (set after key generation completes).
+    /// The assembled public key (33 bytes compressed secp256k1), set after keygen.
     pub public_key: Option<Vec<u8>>,
 
-    /// Key generation status.
-    pub key_gen_status: KeyGenStatus,
+    /// Current key generation phase.
+    pub keygen_phase: KeyGenPhase,
 
-    /// Engine ephemeral public keys (collected during key gen).
-    pub engine_public_keys: Vec<Option<Vec<u8>>>,
+    /// Current signing phase.
+    pub signing_phase: SigningPhase,
 
-    /// Public key shares from each engine (collected during key gen).
-    pub public_key_shares: Vec<Option<EncodedCurvePoint>>,
+    /// Signing round tracker.
+    pub signing_round_tracker: RoundTracker,
 
-    /// Completed signing operations.
-    pub signing_information: AvlTreeMap<TaskId, SigningInformation>,
+    /// Serialized key shares distributed by trusted dealer.
+    /// Index = engine_index, value = serde_json bytes of KeyShare<Secp256k1, SecurityLevel128>.
+    /// WARNING: These are in the clear on-chain — testnet only!
+    pub key_shares: Vec<Option<Vec<u8>>>,
+
+    /// Tracker: which engines have confirmed loading their key share.
+    pub share_confirmations: Vec<bool>,
+
+    /// Signing round messages for the current signing task.
+    pub signing_messages: Vec<RoundMessage>,
+
+    /// Completed signatures keyed by task_id.
+    pub signing_information: AvlTreeMap<u32, SigningInformation>,
 
     /// Next signing task ID.
-    pub next_signing_task_id: TaskId,
+    pub next_signing_task_id: u32,
 
-    /// Preprocessing state.
-    pub preprocess_state: PreprocessState,
+    /// Pending signing requests (FIFO queue).
+    pub pending_sign_requests: Vec<SignRequest>,
 
-    /// Preprocessing information.
-    pub preprocess_information: AvlTreeMap<u32, PreProcessInformation>,
+    /// Number of engines in this signing group.
+    pub num_engines: u8,
 
-    // -- Task queues for the MPC protocol pipeline --
-    /// Queue: Engine uploads ephemeral public keys.
-    pub engine_public_keys_queue: TaskQueue<TaskEngineUploadPublicKey, Vec<u8>>,
-
-    /// Queue: Engines generate and upload secret key shares.
-    pub generate_secret_key_queue:
-        TaskQueue<TaskGenerateSecretKey, ReplicatedSecretShare<EncodedCurvePoint>>,
-
-    /// Queue: Pre-prep check phase.
-    pub pre_prep_check_queue: TaskQueue<TaskPrePrepCheck, TaskPrePrepCheckCompletion>,
-
-    /// Queue: Preprocessing phase.
-    pub prep_queue: TaskQueue<TaskPrep, TaskPrepCompletion>,
-
-    /// Queue: Multiplication check phase 1.
-    pub mul_check_one_queue: TaskQueue<TaskMulCheckOne, TaskMulCheckOneCompletion>,
-
-    /// Queue: Multiplication check phase 2.
-    pub mul_check_two_queue: TaskQueue<TaskMulCheckTwo, TaskMulCheckTwoCompletion>,
-
-    /// Queue: Signing phase.
-    pub sign_queue: TaskQueue<TaskSign, TaskSignCompletion>,
+    /// Threshold for signing (e.g., 2 for 2-of-3).
+    pub threshold: u16,
 }
 
 impl SigningComputationState {
-    /// Create a new SigningComputationState for a key with the given number of engines.
-    pub fn new(key_id: u32, num_engines: EngineIndex, preprocess_config: PreprocessConfig) -> Self {
-        let prefix = format!("key_{}", key_id);
-
-        let mut engine_public_keys = Vec::new();
-        let mut public_key_shares = Vec::new();
+    /// Create a new SigningComputationState for a key.
+    pub fn new(num_engines: EngineIndex, threshold: u16) -> Self {
+        let mut key_shares = Vec::new();
+        let mut share_confirmations = Vec::new();
         for _ in 0..num_engines {
-            engine_public_keys.push(None);
-            public_key_shares.push(None);
+            key_shares.push(None);
+            share_confirmations.push(false);
         }
 
         Self {
             public_key: None,
-            key_gen_status: KeyGenStatus::WaitingForEngineKeys {},
-            engine_public_keys,
-            public_key_shares,
+            keygen_phase: KeyGenPhase::WaitingForDealer {},
+            signing_phase: SigningPhase::Idle {},
+            signing_round_tracker: RoundTracker::new(num_engines),
+            key_shares,
+            share_confirmations,
+            signing_messages: Vec::new(),
             signing_information: AvlTreeMap::new(),
             next_signing_task_id: 0,
-            preprocess_state: PreprocessState {
-                config: preprocess_config,
-                status: PreprocessStatus::Idle {},
-                next_preprocess_id: 0,
-                completed_count: 0,
-                available_count: 0,
-            },
-            preprocess_information: AvlTreeMap::new(),
-            engine_public_keys_queue: TaskQueue::new(
-                format!("{}_engine_pub_keys", prefix).into_bytes(),
-                num_engines,
-            ),
-            generate_secret_key_queue: TaskQueue::new(
-                format!("{}_gen_secret_key", prefix).into_bytes(),
-                num_engines,
-            ),
-            pre_prep_check_queue: TaskQueue::new(
-                format!("{}_pre_prep_check", prefix).into_bytes(),
-                num_engines,
-            ),
-            prep_queue: TaskQueue::new(
-                format!("{}_prep", prefix).into_bytes(),
-                num_engines,
-            ),
-            mul_check_one_queue: TaskQueue::new(
-                format!("{}_mul_check_one", prefix).into_bytes(),
-                num_engines,
-            ),
-            mul_check_two_queue: TaskQueue::new(
-                format!("{}_mul_check_two", prefix).into_bytes(),
-                num_engines,
-            ),
-            sign_queue: TaskQueue::new(
-                format!("{}_sign", prefix).into_bytes(),
-                num_engines,
-            ),
+            pending_sign_requests: Vec::new(),
+            num_engines,
+            threshold,
         }
     }
 
     /// Check if key generation is complete.
     pub fn is_key_generated(&self) -> bool {
-        matches!(self.key_gen_status, KeyGenStatus::Complete {})
+        matches!(self.keygen_phase, KeyGenPhase::Complete {})
     }
 
-    /// Queue a message for signing. Returns the signing task ID.
-    pub fn queue_signing(&mut self, message: Vec<u8>) -> TaskId {
-        let signing_task_id = self.next_signing_task_id;
+    /// Queue a message hash for signing. Returns the signing task ID.
+    pub fn queue_signing(&mut self, message_hash: Vec<u8>) -> u32 {
+        assert!(
+            message_hash.len() == 32,
+            "Message hash must be exactly 32 bytes"
+        );
+
+        let task_id = self.next_signing_task_id;
         self.next_signing_task_id += 1;
 
-        // Store signing info (signature will be filled in later)
         self.signing_information.insert(
-            signing_task_id,
+            task_id,
             SigningInformation {
-                message: message.clone(),
+                message_hash: message_hash.clone(),
                 signature: None,
+                recovery_id: 0,
                 verified: false,
             },
         );
 
-        // Allocate preprocessing material
-        let preprocess_id = self.allocate_preprocess();
-
-        // Push to sign queue
-        self.sign_queue.push_task(TaskSign {
-            signing_task_id,
-            message,
-            preprocess_id,
+        self.pending_sign_requests.push(SignRequest {
+            task_id,
+            message_hash,
         });
 
-        signing_task_id
+        // If no signing is in progress, start this one
+        if matches!(self.signing_phase, SigningPhase::Idle {}) {
+            self.start_next_signing();
+        }
+
+        task_id
     }
 
-    /// Allocate a preprocess slot, returning its ID.
-    fn allocate_preprocess(&mut self) -> u32 {
-        assert!(
-            self.preprocess_state.available_count > 0,
-            "No preprocessing material available. Wait for preprocessing to complete."
-        );
-        self.preprocess_state.available_count -= 1;
-        let id = self.preprocess_state.next_preprocess_id;
-        self.preprocess_state.next_preprocess_id += 1;
-        id
-    }
-
-    /// Start the preprocessing pipeline for this key.
-    pub fn start_preprocessing(&mut self) {
-        let config = self.preprocess_state.config.clone();
-        self.preprocess_state.status = PreprocessStatus::CalculatingPreprocess {};
-
-        let num_batches = (config.num_to_preprocess + config.batch_size - 1) / config.batch_size;
-        for batch_id in 0..num_batches {
-            let actual_size = if batch_id == num_batches - 1 {
-                let remainder = config.num_to_preprocess % config.batch_size;
-                if remainder == 0 {
-                    config.batch_size
-                } else {
-                    remainder
-                }
-            } else {
-                config.batch_size
-            };
-
-            self.pre_prep_check_queue.push_task(TaskPrePrepCheck {
-                batch_id,
-                batch_size: actual_size,
-            });
+    /// Start the next pending signing request.
+    pub fn start_next_signing(&mut self) {
+        if let Some(request) = self.pending_sign_requests.first() {
+            let task_id = request.task_id;
+            self.signing_phase = SigningPhase::InProgress { task_id, round: 0 };
+            self.signing_round_tracker.reset();
+            self.signing_messages.clear();
         }
     }
 
-    /// Record that a preprocessing batch completed, updating available count.
-    pub fn mark_preprocess_batch_complete(&mut self, batch_size: u32) {
-        self.preprocess_state.completed_count += 1;
-        self.preprocess_state.available_count += batch_size;
-
-        let config = self.preprocess_state.config.clone();
-        let num_batches = (config.num_to_preprocess + config.batch_size - 1) / config.batch_size;
-        if self.preprocess_state.completed_count >= num_batches {
-            self.preprocess_state.status = PreprocessStatus::SuccessPreprocess {};
+    /// Advance the signing round after participating engines have posted.
+    pub fn advance_signing_round(&mut self) {
+        if let SigningPhase::InProgress { task_id, round } = &self.signing_phase {
+            self.signing_phase = SigningPhase::InProgress {
+                task_id: *task_id,
+                round: round + 1,
+            };
+            self.signing_round_tracker.reset();
         }
     }
 }
