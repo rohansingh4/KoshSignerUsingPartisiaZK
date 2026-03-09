@@ -14,11 +14,14 @@ extern crate pbc_lib as _;
 
 pub mod access_control;
 
+use create_type_spec_derive::CreateTypeSpec;
 use pbc_contract_common::address::Address;
 use pbc_contract_common::avl_tree_map::AvlTreeMap;
 use pbc_contract_common::context::ContractContext;
 use pbc_contract_common::events::EventGroup;
 use pbc_contract_common::Hash;
+use read_write_rpc_derive::ReadWriteRPC;
+use read_write_state_derive::ReadWriteState;
 
 use crate::access_control::{assert_is_account_owner, assert_is_admin, assert_is_admin_or_account_owner};
 
@@ -46,6 +49,23 @@ const GAS_REGISTER_ACCOUNT: u64 = 100_000;
 const GAS_SIGN_MESSAGE: u64 = 200_000;
 const GAS_ACTIVATE_ACCOUNT: u64 = 100_000;
 
+/// Composite key for signer callback routing.
+#[derive(
+    ReadWriteState,
+    ReadWriteRPC,
+    CreateTypeSpec,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+)]
+pub struct SignerKeyRef {
+    pub signer: Address,
+    pub key_id: u32,
+}
+
 /// The vault contract state.
 #[state]
 pub struct VaultState {
@@ -55,12 +75,16 @@ pub struct VaultState {
     pub registry_address: Address,
     /// Address of the primary kosh-mpc-signer contract.
     pub signer_address: Address,
+    /// Default signer used for newly created accounts.
+    pub default_signer: Address,
+    /// Whitelisted signer contracts allowed to call signer callbacks.
+    pub allowed_signers: AvlTreeMap<Address, bool>,
     /// Mapping: account_id -> signer contract (supports multiple signers in the future).
     pub signer_contracts: AvlTreeMap<u32, Address>,
     /// Mapping: account_id -> owner address (who controls this account).
     pub account_owners: AvlTreeMap<u32, Address>,
-    /// Mapping: signer key_id -> account_id (reverse lookup for callbacks).
-    pub key_to_account: AvlTreeMap<u32, u32>,
+    /// Mapping: (signer,key_id) -> account_id (reverse lookup for callbacks).
+    pub signer_key_to_account: AvlTreeMap<SignerKeyRef, u32>,
     /// Next account ID to assign.
     pub next_account_id: u32,
 }
@@ -76,13 +100,18 @@ pub fn initialize(
     registry_address: Address,
     signer_address: Address,
 ) -> VaultState {
+    let mut allowed_signers = AvlTreeMap::new();
+    allowed_signers.insert(signer_address.clone(), true);
+
     VaultState {
         owner: ctx.sender,
         registry_address,
-        signer_address,
+        signer_address: signer_address.clone(),
+        default_signer: signer_address,
+        allowed_signers,
         signer_contracts: AvlTreeMap::new(),
         account_owners: AvlTreeMap::new(),
-        key_to_account: AvlTreeMap::new(),
+        signer_key_to_account: AvlTreeMap::new(),
         next_account_id: 0,
     }
 }
@@ -112,15 +141,24 @@ pub fn create_account(
 
     // Store account owner
     state.account_owners.insert(account_id, ctx.sender);
-    state.signer_contracts.insert(account_id, state.signer_address);
-    state.key_to_account.insert(key_id, account_id);
+    let signer_for_account = state.default_signer.clone();
+    state
+        .signer_contracts
+        .insert(account_id, signer_for_account.clone());
+    state.signer_key_to_account.insert(
+        SignerKeyRef {
+            signer: signer_for_account.clone(),
+            key_id,
+        },
+        account_id,
+    );
 
     let mut events = Vec::new();
 
     // 1. Call signer to create a new MPC key
     let mut eg1 = EventGroup::builder();
     eg1.call(
-        state.signer_address,
+        signer_for_account.clone(),
         pbc_contract_common::address::Shortname::from_be_bytes(SIGNER_CREATE_KEY_WITH_ID).unwrap(),
     )
     .argument(key_id)
@@ -135,7 +173,7 @@ pub fn create_account(
         pbc_contract_common::address::Shortname::from_be_bytes(REGISTRY_REGISTER_ACCOUNT).unwrap(),
     )
     .argument(user_id_hash)
-    .argument(state.signer_address)
+    .argument(signer_for_account)
     .argument(key_id)
     .with_cost_from_contract(GAS_REGISTER_ACCOUNT)
     .done();
@@ -157,16 +195,20 @@ pub fn on_key_generated(
     key_id: u32,
     public_key: Vec<u8>,
 ) -> (VaultState, Vec<EventGroup>) {
-    // Only the signer contract can call this
+    // Only explicitly whitelisted signer contracts can call this callback.
     assert_eq!(
-        ctx.sender, state.signer_address,
-        "Only the signer contract can notify key generation"
+        state.allowed_signers.get(&ctx.sender),
+        Some(true),
+        "Only a whitelisted signer contract can notify key generation"
     );
 
     let account_id = state
-        .key_to_account
-        .get(&key_id)
-        .expect("No account found for this key_id");
+        .signer_key_to_account
+        .get(&SignerKeyRef {
+            signer: ctx.sender.clone(),
+            key_id,
+        })
+        .expect("No account found for this signer/key_id");
 
     // Call registry to activate the account with the public key
     let mut eg = EventGroup::builder();
@@ -279,5 +321,36 @@ pub fn transfer_vault_ownership(
 ) -> VaultState {
     assert_is_admin(&state, &ctx.sender);
     state.owner = new_owner;
+    state
+}
+
+/// Register a signer contract so it can call callbacks.
+/// Only vault admin can register signers.
+#[action(shortname = 0x07)]
+pub fn register_signer(
+    ctx: ContractContext,
+    mut state: VaultState,
+    signer: Address,
+) -> VaultState {
+    assert_is_admin(&state, &ctx.sender);
+    state.allowed_signers.insert(signer, true);
+    state
+}
+
+/// Set the default signer used for newly created accounts.
+/// Only vault admin can update this.
+#[action(shortname = 0x08)]
+pub fn set_default_signer(
+    ctx: ContractContext,
+    mut state: VaultState,
+    new_signer: Address,
+) -> VaultState {
+    assert_is_admin(&state, &ctx.sender);
+    assert_eq!(
+        state.allowed_signers.get(&new_signer),
+        Some(true),
+        "New default signer must be registered first"
+    );
+    state.default_signer = new_signer;
     state
 }
