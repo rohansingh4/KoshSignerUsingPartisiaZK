@@ -1,10 +1,13 @@
 [workspace]
 members = [
-    "contracts/kosh-mpc-signer",
+    "contracts/kosh-zk-signer",
     "contracts/kosh-account-registry",
     "contracts/kosh-vault",
 ]
 resolver = "2"
+
+[workspace.metadata.zkcompiler]
+url = "https://gitlab.com/api/v4/groups/12499775/-/packages/maven/com/partisiablockchain/language/zkcompiler/4.35.0/zkcompiler-4.35.0-jar-with-dependencies.jar"
 
 [workspace.package]
 version = "0.1.0"
@@ -19,3 +22,4 @@ pbc_lib = { git = "https://gitlab.com/partisiablockchain/language/contract-sdk.g
 read_write_rpc_derive = { git = "https://gitlab.com/partisiablockchain/language/contract-sdk.git", tag = "v.16.126.0" }
 read_write_state_derive = { git = "https://gitlab.com/partisiablockchain/language/contract-sdk.git", tag = "v.16.126.0" }
 create_type_spec_derive = { git = "https://gitlab.com/partisiablockchain/language/contract-sdk.git", tag = "v.16.126.0" }
+pbc_zk = { git = "https://gitlab.com/partisiablockchain/language/contract-sdk.git", tag = "v.16.126.0" }

@@ -1,0 +1,237 @@
+//! ZK-aware signing state machine types.
+//!
+//! Adapted from kosh-mpc-signer-v2's signing_orchestration, but designed for
+//! Shamir-split key storage on ZK nodes instead of plain engine commitments.
+
+use create_type_spec_derive::CreateTypeSpec;
+use pbc_contract_common::avl_tree_map::AvlTreeMap;
+use read_write_rpc_derive::ReadWriteRPC;
+use read_write_state_derive::ReadWriteState;
+
+/// Key generation phase for ZK-based Shamir key splitting.
+#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone, Debug)]
+pub enum ZkKeyGenPhase {
+    /// Waiting for Engine 0 to generate keypair and submit shares.
+    #[discriminant(0)]
+    WaitingForDealer {},
+    /// Shares are being submitted as ZK secret inputs.
+    #[discriminant(1)]
+    SubmittingShares {},
+    /// All shares stored on ZK nodes, public key available.
+    #[discriminant(2)]
+    Complete {},
+}
+
+/// Signing phase for ZK-based reconstruction and signing.
+#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone, Debug)]
+pub enum ZkSigningPhase {
+    /// No signing in progress.
+    #[discriminant(0)]
+    Idle {},
+    /// Threshold ZK shares being opened for reconstruction.
+    #[discriminant(1)]
+    ReconstructingKey { task_id: u32 },
+    /// Shares opened, waiting for Engine 0 to sign.
+    #[discriminant(2)]
+    Signing { task_id: u32 },
+    /// Signing complete for a task.
+    #[discriminant(3)]
+    Complete { task_id: u32 },
+}
+
+/// Metadata attached to each ZK secret variable (share half).
+///
+/// Each Shamir share (256-bit scalar) is stored as two Sbi128 variables:
+/// one for the high 128 bits and one for the low 128 bits.
+#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
+pub struct ShareMetadata {
+    /// Which key this share belongs to.
+    pub key_id: u32,
+    /// 1-based share index (x-coordinate in Shamir polynomial).
+    pub share_index: u8,
+    /// Whether this is the high half (true) or low half (false) of the 256-bit share.
+    pub is_high_half: bool,
+}
+
+/// A pending signing request.
+#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
+pub struct SignRequest {
+    /// Unique task ID for this signing operation.
+    pub task_id: u32,
+    /// The 32-byte message hash to sign (e.g., keccak256 of EVM tx).
+    pub message_hash: Vec<u8>,
+}
+
+/// Information about a completed (or in-progress) signing operation.
+#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
+pub struct SigningInformation {
+    /// The message hash that was signed.
+    pub message_hash: Vec<u8>,
+    /// The ECDSA signature bytes (65 bytes: r || s || v), if complete.
+    pub signature: Option<Vec<u8>>,
+    /// Recovery ID (0 or 1) for EVM v-value derivation.
+    pub recovery_id: u8,
+    /// Whether the signature has been verified against the public key.
+    pub verified: bool,
+}
+
+/// A share that has been opened from ZK storage for reconstruction.
+///
+/// The high and low bytes together form the 256-bit Shamir share value.
+#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
+pub struct OpenedShare {
+    /// 1-based share index (x-coordinate in Shamir polynomial).
+    pub share_index: u8,
+    /// High 128 bits of the share value (16 bytes, big-endian).
+    pub high_bytes: Vec<u8>,
+    /// Low 128 bits of the share value (16 bytes, big-endian).
+    pub low_bytes: Vec<u8>,
+}
+
+/// Tracks a ZK variable ID along with its share metadata.
+///
+/// We store variable IDs as i32 (the raw SecretVarId representation)
+/// to ensure compatibility with ReadWriteState serialization.
+#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
+pub struct StoredShareVar {
+    /// The ZK secret variable ID (SecretVarId.raw_id value).
+    pub variable_id: u32,
+    /// Which key this variable belongs to.
+    pub key_id: u32,
+    /// 1-based share index.
+    pub share_index: u8,
+    /// Whether this is the high half.
+    pub is_high_half: bool,
+}
+
+/// The full ZK signing state for a single key.
+#[derive(ReadWriteState, CreateTypeSpec)]
+pub struct ZkKeyState {
+    /// The compressed public key (33 bytes secp256k1), set after keygen.
+    pub public_key: Option<Vec<u8>>,
+
+    /// Current key generation phase.
+    pub keygen_phase: ZkKeyGenPhase,
+
+    /// Current signing phase.
+    pub signing_phase: ZkSigningPhase,
+
+    /// ZK variable IDs for stored share halves.
+    pub share_variables: Vec<StoredShareVar>,
+
+    /// Total expected share variables (2 * num_shares: high + low for each).
+    pub expected_share_count: u32,
+
+    /// Number of share variables successfully stored in ZK.
+    pub shares_submitted: u32,
+
+    /// Shamir threshold (t in t-of-n).
+    pub threshold: u16,
+
+    /// Total number of Shamir shares (n).
+    pub num_shares: u8,
+
+    /// Next signing task ID to assign.
+    pub next_signing_task_id: u32,
+
+    /// Pending signing requests (FIFO queue).
+    pub pending_sign_requests: Vec<SignRequest>,
+
+    /// Completed signatures keyed by task_id.
+    pub signing_information: AvlTreeMap<u32, SigningInformation>,
+
+    /// Temporarily stores opened share values for Engine 0 reconstruction.
+    /// Cleared after signing is complete.
+    pub opened_shares: Vec<OpenedShare>,
+}
+
+impl ZkKeyState {
+    /// Create a new ZkKeyState for a key with the given threshold parameters.
+    pub fn new(threshold: u16, num_shares: u8) -> Self {
+        Self {
+            public_key: None,
+            keygen_phase: ZkKeyGenPhase::WaitingForDealer {},
+            signing_phase: ZkSigningPhase::Idle {},
+            share_variables: Vec::new(),
+            expected_share_count: (num_shares as u32) * 2, // high + low for each share
+            shares_submitted: 0,
+            threshold,
+            num_shares,
+            next_signing_task_id: 0,
+            pending_sign_requests: Vec::new(),
+            signing_information: AvlTreeMap::new(),
+            opened_shares: Vec::new(),
+        }
+    }
+
+    /// Check if key generation is complete.
+    pub fn is_key_generated(&self) -> bool {
+        matches!(self.keygen_phase, ZkKeyGenPhase::Complete {})
+    }
+
+    /// Queue a message hash for signing. Returns the signing task ID.
+    pub fn queue_signing(&mut self, message_hash: Vec<u8>) -> u32 {
+        assert_eq!(
+            message_hash.len(),
+            32,
+            "Message hash must be exactly 32 bytes"
+        );
+
+        let task_id = self.next_signing_task_id;
+        self.next_signing_task_id += 1;
+
+        self.signing_information.insert(
+            task_id,
+            SigningInformation {
+                message_hash: message_hash.clone(),
+                signature: None,
+                recovery_id: 0,
+                verified: false,
+            },
+        );
+
+        self.pending_sign_requests.push(SignRequest {
+            task_id,
+            message_hash,
+        });
+
+        // If no signing is in progress, start this one
+        if matches!(self.signing_phase, ZkSigningPhase::Idle {}) {
+            self.start_next_signing();
+        }
+
+        task_id
+    }
+
+    /// Start the next pending signing request.
+    pub fn start_next_signing(&mut self) {
+        if let Some(request) = self.pending_sign_requests.first() {
+            let task_id = request.task_id;
+            self.signing_phase = ZkSigningPhase::ReconstructingKey { task_id };
+        }
+    }
+
+    /// Get ZK variable IDs for threshold shares to open.
+    ///
+    /// Returns variable IDs for the first `threshold` shares (both high and low halves).
+    pub fn get_threshold_variable_ids(&self) -> Vec<u32> {
+        let mut var_ids = Vec::new();
+        let mut seen_indices: Vec<u8> = Vec::new();
+
+        for sv in &self.share_variables {
+            if !seen_indices.contains(&sv.share_index)
+                && seen_indices.len() < self.threshold as usize
+            {
+                seen_indices.push(sv.share_index);
+            }
+        }
+
+        for sv in &self.share_variables {
+            if seen_indices.contains(&sv.share_index) {
+                var_ids.push(sv.variable_id);
+            }
+        }
+
+        var_ids
+    }
+}

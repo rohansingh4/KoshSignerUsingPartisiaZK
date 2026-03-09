@@ -5,14 +5,17 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "demo": "tsx src/index.ts"
+    "test:zk": "tsx src/test-zk-flow.ts"
   },
   "dependencies": {
-    "viem": "^2.21.0"
+    "@noble/curves": "^1.8.0",
+    "@partisiablockchain/abi-client": "^6.115.0",
+    "@partisiablockchain/zk-client": "^6.105.0",
+    "@secata-public/bitmanipulation-ts": "^3.4.0"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0",
-    "@types/node": "^22.0.0"
+    "typescript": "^5.6.0"
   }
 }

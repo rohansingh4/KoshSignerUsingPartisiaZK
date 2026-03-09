@@ -11,12 +11,15 @@ extern crate pbc_contract_common;
 extern crate pbc_lib as _;
 
 use create_type_spec_derive::CreateTypeSpec;
+use k256::PublicKey;
+use k256::elliptic_curve::sec1::ToEncodedPoint;
 use pbc_contract_common::address::{Address, AddressType};
 use pbc_contract_common::avl_tree_map::AvlTreeMap;
 use pbc_contract_common::context::ContractContext;
 use pbc_contract_common::Hash;
 use read_write_rpc_derive::ReadWriteRPC;
 use read_write_state_derive::ReadWriteState;
+use tiny_keccak::{Hasher, Keccak};
 
 /// Account lifecycle status.
 #[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone, Debug, PartialEq)]
@@ -44,6 +47,8 @@ pub struct AccountInfo {
     pub public_key: Option<Vec<u8>>,
     /// The derived blockchain address (21 bytes), computed from public key.
     pub derived_address: Option<Address>,
+    /// Canonical EVM address (20 bytes) derived from secp256k1 public key.
+    pub evm_address: Option<Vec<u8>>,
     /// Address of the signer contract managing this account's key.
     pub signer_contract: Address,
     /// The key_id within the signer contract.
@@ -75,6 +80,39 @@ impl RegistryState {
             "Only the owner (vault) can call this action"
         );
     }
+}
+
+/// Derive Partisia and EVM addresses from a compressed secp256k1 public key.
+fn derive_addresses(public_key: &[u8]) -> (Address, Vec<u8>) {
+    // Existing Partisia derivation:
+    // Address = type_prefix(1) + SHA256(compressed_pubkey)[last 20 bytes]
+    let hash = Hash::digest(public_key);
+    let hash_bytes: &[u8] = hash.as_ref();
+    let mut partisia_id = [0u8; 20];
+    partisia_id.copy_from_slice(&hash_bytes[12..32]);
+    let partisia_address = Address::from_components(AddressType::Account, partisia_id);
+
+    // Canonical EVM derivation:
+    // EVM = last 20 bytes of keccak256(uncompressed_pubkey_without_prefix)
+    let public_key = PublicKey::from_sec1_bytes(public_key)
+        .expect("Public key must be a valid compressed secp256k1 point");
+    let uncompressed = public_key.to_encoded_point(false);
+    let uncompressed_bytes = uncompressed.as_bytes();
+    assert_eq!(
+        uncompressed_bytes.len(),
+        65,
+        "Uncompressed public key must be 65 bytes"
+    );
+
+    let mut keccak = Keccak::v256();
+    keccak.update(&uncompressed_bytes[1..]);
+    let mut out = [0u8; 32];
+    keccak.finalize(&mut out);
+
+    let mut evm_address = vec![0u8; 20];
+    evm_address.copy_from_slice(&out[12..32]);
+
+    (partisia_address, evm_address)
 }
 
 /// Initialize the registry contract.
@@ -128,6 +166,7 @@ pub fn register_account(
         user_id_hash,
         public_key: None,
         derived_address: None,
+        evm_address: None,
         signer_contract,
         signer_key_id,
         status: AccountStatus::Pending {},
@@ -172,16 +211,11 @@ pub fn activate_account(
         "Public key must be 33 bytes (compressed)"
     );
 
-    // Derive the blockchain address from the public key
-    // Address = type_prefix(1) + SHA256(compressed_pubkey)[last 20 bytes]
-    let hash = Hash::digest(&public_key);
-    let hash_bytes: &[u8] = hash.as_ref();
-    let mut id = [0u8; 20];
-    id.copy_from_slice(&hash_bytes[12..32]); // last 20 bytes
-    let derived_address = Address::from_components(AddressType::Account, id);
+    let (derived_address, evm_address) = derive_addresses(&public_key);
 
     account.public_key = Some(public_key);
     account.derived_address = Some(derived_address);
+    account.evm_address = Some(evm_address);
     account.status = AccountStatus::Active {};
 
     state.accounts.insert(account_id, account);
@@ -244,15 +278,11 @@ pub fn complete_key_rotation(
         "Public key must be 33 bytes (compressed)"
     );
 
-    // Derive new address
-    let hash = Hash::digest(&new_public_key);
-    let hash_bytes: &[u8] = hash.as_ref();
-    let mut id = [0u8; 20];
-    id.copy_from_slice(&hash_bytes[12..32]);
-    let derived_address = Address::from_components(AddressType::Account, id);
+    let (derived_address, evm_address) = derive_addresses(&new_public_key);
 
     account.public_key = Some(new_public_key);
     account.derived_address = Some(derived_address);
+    account.evm_address = Some(evm_address);
     account.signer_key_id = new_signer_key_id;
     account.status = AccountStatus::Active {};
 
