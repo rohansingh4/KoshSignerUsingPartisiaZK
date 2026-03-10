@@ -4,6 +4,7 @@
 //! Shamir-split key storage on ZK nodes instead of plain engine commitments.
 
 use create_type_spec_derive::CreateTypeSpec;
+use pbc_contract_common::address::Address;
 use pbc_contract_common::avl_tree_map::AvlTreeMap;
 use read_write_rpc_derive::ReadWriteRPC;
 use read_write_state_derive::ReadWriteState;
@@ -20,6 +21,15 @@ pub enum ZkKeyGenPhase {
     /// All shares stored on ZK nodes, public key available.
     #[discriminant(2)]
     Complete {},
+    /// DKG commit phase: parties are submitting commitment hashes.
+    #[discriminant(3)]
+    DkgCommitting {},
+    /// DKG reveal phase: parties are revealing their public key shares.
+    #[discriminant(4)]
+    DkgRevealing {},
+    /// DKG finalized: combined public key computed, awaiting ZK secret share inputs.
+    #[discriminant(5)]
+    DkgFinalized {},
 }
 
 /// Signing phase for ZK-based reconstruction and signing.
@@ -37,6 +47,9 @@ pub enum ZkSigningPhase {
     /// Signing complete for a task.
     #[discriminant(3)]
     Complete { task_id: u32 },
+    /// Threshold ECDSA: collecting partial signatures (key NEVER reconstructed).
+    #[discriminant(4)]
+    ThresholdSigning { task_id: u32 },
 }
 
 /// Metadata attached to each ZK secret variable (share half).
@@ -89,9 +102,6 @@ pub struct OpenedShare {
 }
 
 /// Tracks a ZK variable ID along with its share metadata.
-///
-/// We store variable IDs as i32 (the raw SecretVarId representation)
-/// to ensure compatibility with ReadWriteState serialization.
 #[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
 pub struct StoredShareVar {
     /// The ZK secret variable ID (SecretVarId.raw_id value).
@@ -105,6 +115,9 @@ pub struct StoredShareVar {
 }
 
 /// The full ZK signing state for a single key.
+///
+/// DKG and threshold signing fields are flattened into this struct
+/// (no nested custom structs in Vecs) to work with the Partisia ABI parser.
 #[derive(ReadWriteState, CreateTypeSpec)]
 pub struct ZkKeyState {
     /// The compressed public key (33 bytes secp256k1), set after keygen.
@@ -143,6 +156,40 @@ pub struct ZkKeyState {
     /// Temporarily stores opened share values for Engine 0 reconstruction.
     /// Cleared after signing is complete.
     pub opened_shares: Vec<OpenedShare>,
+
+    // --- DKG fields (flattened) ---
+
+    /// Number of parties expected in the DKG ceremony.
+    pub dkg_num_parties: u8,
+    /// DKG commitment addresses (parallel with dkg_commitment_hashes).
+    pub dkg_commit_addresses: Vec<Address>,
+    /// DKG commitment hashes — SHA-256 of each party's compressed public key share.
+    /// Each entry is 32 bytes. Parallel with dkg_commit_addresses.
+    pub dkg_commitment_hashes: Vec<Vec<u8>>,
+    /// DKG reveal addresses (parallel with dkg_reveal_pubkeys).
+    pub dkg_reveal_addresses: Vec<Address>,
+    /// DKG revealed public key shares (33 bytes compressed secp256k1 each).
+    /// Parallel with dkg_reveal_addresses.
+    pub dkg_reveal_pubkeys: Vec<Vec<u8>>,
+
+    // --- Threshold signing fields (flattened) ---
+
+    /// Whether a threshold signing session is active.
+    pub ts_active: bool,
+    /// Threshold signing: the signing task ID.
+    pub ts_task_id: u32,
+    /// Threshold signing: nonce point R's x-coordinate (32 bytes).
+    pub ts_r_bytes: Vec<u8>,
+    /// Threshold signing: ECDSA recovery ID (0 or 1).
+    pub ts_recovery_id: u8,
+    /// Threshold signing: number of parties expected.
+    pub ts_num_parties: u8,
+    /// Threshold signing: party indices for submitted partials.
+    /// Parallel with ts_partial_values.
+    pub ts_partial_indices: Vec<u8>,
+    /// Threshold signing: partial signature scalars (32 bytes each).
+    /// Parallel with ts_partial_indices.
+    pub ts_partial_values: Vec<Vec<u8>>,
 }
 
 impl ZkKeyState {
@@ -153,7 +200,7 @@ impl ZkKeyState {
             keygen_phase: ZkKeyGenPhase::WaitingForDealer {},
             signing_phase: ZkSigningPhase::Idle {},
             share_variables: Vec::new(),
-            expected_share_count: (num_shares as u32) * 2, // high + low for each share
+            expected_share_count: (num_shares as u32) * 2,
             shares_submitted: 0,
             threshold,
             num_shares,
@@ -161,6 +208,18 @@ impl ZkKeyState {
             pending_sign_requests: Vec::new(),
             signing_information: AvlTreeMap::new(),
             opened_shares: Vec::new(),
+            dkg_num_parties: 0,
+            dkg_commit_addresses: Vec::new(),
+            dkg_commitment_hashes: Vec::new(),
+            dkg_reveal_addresses: Vec::new(),
+            dkg_reveal_pubkeys: Vec::new(),
+            ts_active: false,
+            ts_task_id: 0,
+            ts_r_bytes: Vec::new(),
+            ts_recovery_id: 0,
+            ts_num_parties: 0,
+            ts_partial_indices: Vec::new(),
+            ts_partial_values: Vec::new(),
         }
     }
 
@@ -195,7 +254,6 @@ impl ZkKeyState {
             message_hash,
         });
 
-        // If no signing is in progress, start this one
         if matches!(self.signing_phase, ZkSigningPhase::Idle {}) {
             self.start_next_signing();
         }
@@ -212,8 +270,6 @@ impl ZkKeyState {
     }
 
     /// Get ZK variable IDs for threshold shares to open.
-    ///
-    /// Returns variable IDs for the first `threshold` shares (both high and low halves).
     pub fn get_threshold_variable_ids(&self) -> Vec<u32> {
         let mut var_ids = Vec::new();
         let mut seen_indices: Vec<u8> = Vec::new();

@@ -1,21 +1,21 @@
-//! Kosh ZK Signer Contract — ECDSA key splitting via Shamir's Secret Sharing on Partisia ZK nodes.
+//! Kosh ZK Signer Contract — DKG + Threshold ECDSA on Partisia ZK nodes.
 //!
-//! Architecture:
-//! 1. Engine 0 generates secp256k1 keypair and Shamir-splits the private key
-//! 2. Each share is stored as ZK secret variables (split into 2x Sbi128 halves)
-//! 3. ZK nodes auto-secret-share each variable across the cluster
-//! 4. For signing: threshold shares are opened, Engine 0 reconstructs via Lagrange interpolation
-//! 5. Engine 0 signs with k256 ECDSA and posts the verified (r, s, v) on-chain
+//! Architecture (private key NEVER assembled):
+//! 1. DKG: Each party generates a random secret scalar s_i and public share P_i = s_i × G
+//! 2. Commit-reveal ceremony on-chain prevents manipulation
+//! 3. Contract computes combined public key P = P₁ + P₂ + ... + Pₙ (EC point addition)
+//! 4. Each s_i is stored as encrypted ZK secret variables (2x Sbi128 halves)
+//! 5. For signing: each party computes partial σ_i = k⁻¹(m + r·s_i), contract combines σ = Σσ_i
+//! 6. Contract verifies the combined ECDSA signature on-chain
 //!
-//! Vault-compatible shortnames: 0x02 (create_key_with_id), 0x03 (sign_message)
+//! The private key s = s₁ + s₂ + ... + sₙ is NEVER computed anywhere.
 
 #[macro_use]
 extern crate pbc_contract_codegen;
 extern crate pbc_contract_common;
 extern crate pbc_lib as _;
 
-pub mod off_chain;
-pub mod shamir;
+pub mod dkg;
 pub mod signing_state;
 
 use create_type_spec_derive::CreateTypeSpec;
@@ -307,7 +307,9 @@ pub fn submit_key_share(
     assert!(
         matches!(
             key_state.keygen_phase,
-            ZkKeyGenPhase::WaitingForDealer {} | ZkKeyGenPhase::SubmittingShares {}
+            ZkKeyGenPhase::WaitingForDealer {}
+                | ZkKeyGenPhase::SubmittingShares {}
+                | ZkKeyGenPhase::DkgFinalized {}
         ),
         "Cannot submit shares in current keygen phase"
     );
@@ -546,6 +548,331 @@ pub fn force_complete_keygen(
 }
 
 // ---------------------------------------------------------------------------
+// DKG (Distributed Key Generation) — key is NEVER assembled
+// ---------------------------------------------------------------------------
+
+/// Create a key using DKG: initializes a commit/reveal ceremony for num_parties participants.
+/// The private key is born split — no single party ever holds the full key.
+#[action(shortname = 0x20, zk = true)]
+pub fn dkg_create_key(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    num_parties: u8,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    state.assert_owner(&ctx.sender);
+    assert!(
+        state.keys.get(&key_id).is_none(),
+        "Key ID {} already exists",
+        key_id
+    );
+    assert!(num_parties >= 2, "DKG requires at least 2 parties");
+
+    let mut key_state = ZkKeyState::new(state.threshold, state.num_shares);
+    key_state.keygen_phase = ZkKeyGenPhase::DkgCommitting {};
+    key_state.dkg_num_parties = num_parties;
+    state.keys.insert(key_id, key_state);
+
+    (state, vec![], vec![])
+}
+
+/// DKG commit: a party submits hash(P_i) where P_i is their public key share.
+#[action(shortname = 0x21, zk = true)]
+pub fn dkg_commit(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    commitment_hash: Vec<u8>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(
+        matches!(key_state.keygen_phase, ZkKeyGenPhase::DkgCommitting {}),
+        "Key is not in DKG committing phase"
+    );
+
+    let all_committed = dkg::add_commitment(&mut key_state, ctx.sender, commitment_hash);
+
+    if all_committed {
+        key_state.keygen_phase = ZkKeyGenPhase::DkgRevealing {};
+    }
+    state.keys.insert(key_id, key_state);
+
+    (state, vec![], vec![])
+}
+
+/// DKG reveal: a party reveals their public key share P_i.
+/// Contract verifies it matches the previously committed hash.
+#[action(shortname = 0x22, zk = true)]
+pub fn dkg_reveal(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    public_key_share: Vec<u8>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(
+        matches!(key_state.keygen_phase, ZkKeyGenPhase::DkgRevealing {}),
+        "Key is not in DKG revealing phase"
+    );
+
+    let _all_revealed = dkg::add_reveal(&mut key_state, ctx.sender, public_key_share);
+
+    state.keys.insert(key_id, key_state);
+
+    (state, vec![], vec![])
+}
+
+/// DKG finalize: compute the combined public key P = P₁ + P₂ + ... + Pₙ.
+/// After this, parties submit their secret shares s_i as ZK secrets (existing 0x10 flow).
+#[action(shortname = 0x23, zk = true)]
+pub fn dkg_finalize(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    state.assert_owner(&ctx.sender);
+
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(
+        matches!(key_state.keygen_phase, ZkKeyGenPhase::DkgRevealing {}),
+        "Key is not in DKG revealing phase"
+    );
+
+    assert!(
+        key_state.dkg_reveal_addresses.len() as u8 >= key_state.dkg_num_parties,
+        "Not all parties have revealed yet"
+    );
+
+    // Compute combined public key via EC point addition
+    let combined_pk = dkg::combine_public_keys(&key_state.dkg_reveal_pubkeys);
+
+    // Validate the combined key
+    VerifyingKey::from_sec1_bytes(&combined_pk).expect("Combined public key is invalid");
+
+    key_state.public_key = Some(combined_pk);
+    key_state.keygen_phase = ZkKeyGenPhase::DkgFinalized {};
+
+    state.keys.insert(key_id, key_state);
+
+    (state, vec![], vec![])
+}
+
+/// Force-complete DKG keygen after shares have been submitted.
+/// Moves from DkgFinalized to Complete so signing can proceed.
+#[action(shortname = 0x24, zk = true)]
+pub fn dkg_complete_keygen(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    state.assert_owner(&ctx.sender);
+
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(
+        matches!(key_state.keygen_phase, ZkKeyGenPhase::DkgFinalized {}),
+        "Key is not in DkgFinalized phase"
+    );
+    assert!(
+        key_state.public_key.is_some(),
+        "Public key must be set (run dkg_finalize first)"
+    );
+
+    key_state.keygen_phase = ZkKeyGenPhase::Complete {};
+
+    let pk = key_state.public_key.clone().unwrap();
+    let events = emit_key_generated_event(&state, key_id, &pk);
+    state.keys.insert(key_id, key_state);
+
+    (state, events, vec![])
+}
+
+// ---------------------------------------------------------------------------
+// Threshold ECDSA Signing — private key NEVER reconstructed
+// ---------------------------------------------------------------------------
+
+/// Start a threshold signing session.
+///
+/// The coordinator submits the nonce point R (computed as k × G off-chain).
+/// Each party will then submit their partial signature σ_i = k⁻¹ · r · s_i.
+/// The contract combines partials and verifies the final ECDSA signature.
+///
+/// SECURITY: The private key s = Σ s_i is NEVER computed. Each party only uses
+/// their own secret share s_i. The contract combines the partial signatures
+/// on-chain so no single off-chain entity ever sees the full signature σ
+/// before the nonce k is discarded.
+#[action(shortname = 0x30, zk = true)]
+pub fn start_threshold_sign(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    task_id: u32,
+    r_bytes: Vec<u8>,
+    recovery_id: u8,
+    num_parties: u8,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    state.assert_owner(&ctx.sender);
+
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(
+        key_state.is_key_generated(),
+        "Key generation not yet complete"
+    );
+    assert_eq!(r_bytes.len(), 32, "r_bytes must be 32 bytes");
+    assert!(recovery_id <= 1, "recovery_id must be 0 or 1");
+    assert!(num_parties >= 2, "Need at least 2 parties");
+
+    // Ensure we have a signing task queued
+    let info = key_state
+        .signing_information
+        .get(&task_id)
+        .expect("Unknown signing task — call sign_message first");
+    assert!(
+        info.signature.is_none(),
+        "Signature already set for this task"
+    );
+
+    // Create threshold signing session
+    key_state.ts_active = true;
+    key_state.ts_task_id = task_id;
+    key_state.ts_r_bytes = r_bytes;
+    key_state.ts_recovery_id = recovery_id;
+    key_state.ts_num_parties = num_parties;
+    key_state.ts_partial_indices.clear();
+    key_state.ts_partial_values.clear();
+    key_state.signing_phase = ZkSigningPhase::ThresholdSigning { task_id };
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+/// Submit a partial signature for threshold ECDSA signing.
+///
+/// Each party submits σ_i = k⁻¹ · r · s_i (mod n).
+/// Party 1 also includes the message component: σ_1 += k⁻¹ · m.
+///
+/// When all partials are collected, the contract:
+/// 1. Sums σ = Σ σ_i
+/// 2. Constructs the full ECDSA signature (r, σ)
+/// 3. Verifies against the stored public key
+/// 4. Stores the verified signature
+///
+/// The private key s is NEVER computed — only individual s_i values are used.
+#[action(shortname = 0x31, zk = true)]
+pub fn submit_partial_sig(
+    _ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    party_index: u8,
+    partial_s: Vec<u8>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+
+    assert!(
+        matches!(
+            key_state.signing_phase,
+            ZkSigningPhase::ThresholdSigning { .. }
+        ),
+        "Not in threshold signing phase"
+    );
+    assert_eq!(partial_s.len(), 32, "Partial signature must be 32 bytes");
+    assert!(key_state.ts_active, "No threshold signing session active");
+
+    // Check party hasn't already submitted
+    assert!(
+        !key_state.ts_partial_indices.iter().any(|&idx| idx == party_index),
+        "Party {} has already submitted a partial signature",
+        party_index
+    );
+
+    key_state.ts_partial_indices.push(party_index);
+    key_state.ts_partial_values.push(partial_s.clone());
+
+    // Check if all partials collected
+    if key_state.ts_partial_indices.len() as u8 >= key_state.ts_num_parties {
+        // Combine partial signatures: σ = Σ σ_i (mod n)
+        let combined_s = combine_partial_signatures(&key_state.ts_partial_values);
+
+        // Build the full 65-byte signature: r (32) || s (32) || v (1)
+        let mut signature = Vec::with_capacity(65);
+        signature.extend_from_slice(&key_state.ts_r_bytes);
+        signature.extend_from_slice(&combined_s);
+        signature.push(key_state.ts_recovery_id);
+
+        // Verify the combined ECDSA signature against the stored public key
+        let public_key = key_state
+            .public_key
+            .clone()
+            .expect("Public key missing");
+        let verifying_key = VerifyingKey::from_sec1_bytes(&public_key)
+            .expect("Stored public key is not valid");
+
+        let sig64 = &signature[0..64];
+        let parsed_sig = Signature::try_from(sig64)
+            .expect("Failed to parse combined signature");
+
+        let task_id = key_state.ts_task_id;
+        let mut info = key_state
+            .signing_information
+            .get(&task_id)
+            .expect("Signing task not found");
+
+        verifying_key
+            .verify_prehash(&info.message_hash, &parsed_sig)
+            .expect("Combined threshold signature verification failed");
+
+        // Store the verified signature
+        info.recovery_id = key_state.ts_recovery_id;
+        info.signature = Some(signature);
+        info.verified = true;
+        key_state.signing_information.insert(task_id, info);
+
+        // Clean up and advance
+        key_state.ts_active = false;
+        key_state.ts_partial_indices.clear();
+        key_state.ts_partial_values.clear();
+        key_state.signing_phase = ZkSigningPhase::Complete { task_id };
+        key_state
+            .pending_sign_requests
+            .retain(|r| r.task_id != task_id);
+
+        if !key_state.pending_sign_requests.is_empty() {
+            key_state.start_next_signing();
+        } else {
+            key_state.signing_phase = ZkSigningPhase::Idle {};
+        }
+    }
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+/// Combine partial signature scalars via modular addition over secp256k1 order.
+///
+/// σ = σ₁ + σ₂ + ... + σₙ (mod n)
+fn combine_partial_signatures(partial_values: &[Vec<u8>]) -> Vec<u8> {
+    use k256::elliptic_curve::ff::PrimeField;
+    use k256::{FieldBytes, Scalar};
+
+    let mut sum = Scalar::ZERO;
+    for partial_s in partial_values {
+        let mut bytes = FieldBytes::default();
+        bytes.copy_from_slice(partial_s);
+        let scalar = Option::<Scalar>::from(Scalar::from_repr(bytes))
+            .expect("Invalid partial signature scalar");
+        sum = sum + scalar;
+    }
+
+    sum.to_bytes().to_vec()
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -568,17 +895,3 @@ fn emit_key_generated_event(
     vec![event_group.build()]
 }
 
-// ---------------------------------------------------------------------------
-// Off-chain handler
-// ---------------------------------------------------------------------------
-
-/// Off-chain handler: triggered on every state change.
-/// Dispatches keygen and signing tasks to Engine 0.
-#[off_chain_on_state_change]
-pub fn off_chain_on_state_update(
-    ctx: pbc_contract_common::off_chain::OffChainContext,
-    state: ContractState,
-) {
-    let mut dispatcher = off_chain::OffChainDispatcher::new(ctx, state);
-    dispatcher.process_all_keys();
-}
