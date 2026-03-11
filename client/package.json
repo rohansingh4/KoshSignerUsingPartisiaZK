@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "test:zk": "tsx src/test-zk-flow.ts",
-    "test:dkg": "tsx src/test-dkg-flow.ts"
+    "test:dkg": "tsx src/test-dkg-flow.ts",
+    "setup:testnet": "tsx src/setup-partisia-testnet.ts"
   },
   "dependencies": {
     "@noble/curves": "^1.8.0",

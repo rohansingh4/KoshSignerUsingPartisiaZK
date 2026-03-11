@@ -33,6 +33,8 @@ use crate::access_control::{assert_is_account_owner, assert_is_admin, assert_is_
 const SIGNER_CREATE_KEY_WITH_ID: &[u8] = &[0x02];
 /// Signer: sign_message(key_id: u32, message: Vec<u8>)
 const SIGNER_SIGN_MESSAGE: &[u8] = &[0x03];
+/// ZK binder openInvocation shortname.
+const SIGNER_OPEN_INVOCATION: u8 = 0x09;
 /// Registry: register_account(user_id_hash: Hash, signer_contract: Address, signer_key_id: u32)
 const REGISTRY_REGISTER_ACCOUNT: &[u8] = &[0x01];
 /// Registry: activate_account(account_id: u32, public_key: Vec<u8>)
@@ -48,6 +50,22 @@ const GAS_CREATE_KEY: u64 = 200_000;
 const GAS_REGISTER_ACCOUNT: u64 = 100_000;
 const GAS_SIGN_MESSAGE: u64 = 200_000;
 const GAS_ACTIVATE_ACCOUNT: u64 = 100_000;
+
+fn signer_create_key_rpc(key_id: u32) -> Vec<u8> {
+    // ZK signer actions must be wrapped in binder openInvocation:
+    // [0x09, action_shortname, action_args...]
+    let mut rpc = vec![SIGNER_OPEN_INVOCATION, SIGNER_CREATE_KEY_WITH_ID[0]];
+    rpc.extend_from_slice(&key_id.to_be_bytes());
+    rpc
+}
+
+fn signer_sign_message_rpc(key_id: u32, message: Vec<u8>) -> Vec<u8> {
+    let mut rpc = vec![SIGNER_OPEN_INVOCATION, SIGNER_SIGN_MESSAGE[0]];
+    rpc.extend_from_slice(&key_id.to_be_bytes());
+    rpc.extend_from_slice(&(message.len() as u32).to_be_bytes());
+    rpc.extend_from_slice(&message);
+    rpc
+}
 
 /// Composite key for signer callback routing.
 #[derive(
@@ -157,11 +175,10 @@ pub fn create_account(
 
     // 1. Call signer to create a new MPC key
     let mut eg1 = EventGroup::builder();
-    eg1.call(
+    eg1.call_with_rpc(
         signer_for_account.clone(),
-        pbc_contract_common::address::Shortname::from_be_bytes(SIGNER_CREATE_KEY_WITH_ID).unwrap(),
+        signer_create_key_rpc(key_id),
     )
-    .argument(key_id)
     .with_cost_from_contract(GAS_CREATE_KEY)
     .done();
     events.push(eg1.build());
@@ -252,12 +269,10 @@ pub fn request_signature(
 
     // Forward signing request to the signer contract
     let mut eg = EventGroup::builder();
-    eg.call(
+    eg.call_with_rpc(
         signer_address,
-        pbc_contract_common::address::Shortname::from_be_bytes(SIGNER_SIGN_MESSAGE).unwrap(),
+        signer_sign_message_rpc(key_id, message),
     )
-    .argument(key_id)
-    .argument(message)
     .with_cost_from_contract(GAS_SIGN_MESSAGE)
     .done();
 
