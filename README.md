@@ -858,39 +858,40 @@ Think of a clock with `n` hours (where `n` is astronomically large). Each party 
 
 All transactions viewable at: `https://browser.testnet.partisiablockchain.com/transactions/<HASH>`
 
-### DKG Phase — Creating the Key (12 transactions)
+### DKG Phase — Creating the Key
 
 | # | Action | Tx Hash | What Happened |
 |---|--------|---------|---------------|
-| 1 | `dkg_create_key` | `e0a3a36f08e7c5e7cf05a8c0b3d71bf24e4cc64b992bc9ad68df934b6b5d9bd0` | Created key slot #1 for 3 parties, phase → Committing |
-| 2 | `dkg_commit` P1 | `f8dd4a0a5a955309a7ff000c7225f47e2a9fb8bd22e9ae4cf20e6e2e7a2ff920` | Party 1 committed SHA-256(P₁) — locked in their choice |
-| 3 | `dkg_commit` P2 | `0e1dc99e430fa8e46fbeeb2b9a37e4a254e2f4e28226e7f2e49bcf2d21e3e8ad` | Party 2 committed SHA-256(P₂) |
-| 4 | `dkg_commit` P3 | `cdfc2b39da3e68dea0b9417bfc3ecd8cd26d45cac5e1d8c4d1a6e01b2d339cb2` | Party 3 committed SHA-256(P₃). All committed → phase = Revealing |
-| 5 | `dkg_reveal` P1 | `70e5f2d5a1aa1a3fd2a7c7f9eb2f41fe1c6b22ad94cdfc831fd60ef99f2ce9fb` | Party 1 revealed P₁. Contract verified SHA-256(P₁) == C₁ ✓ |
-| 6 | `dkg_reveal` P2 | `b0fce68ca80d2816b8c2e29c1ce69a0f40f539ed27c8d3c6ffbbb3d13b7a8f17` | Party 2 revealed P₂. Contract verified SHA-256(P₂) == C₂ ✓ |
-| 7 | `dkg_reveal` P3 | `4c02e8b07fbb8fe94fdd2dfa9d1eb2cb0eeea3c95d5a5c1d3ae0a88cc43dba5e` | Party 3 revealed P₃. All revealed → ready to finalize |
-| 8 | `dkg_finalize` | `4e2c5c5e9f5ba6f3c3af2c47b8e3c8de0a9f8dcd57ce1236d2f7b3abb2cd0fec` | Contract computed P = P₁ + P₂ + P₃ (EC point addition) |
-| 9 | `submit_key_share` P1 | `4af4c0b3e6cc3f01ade1e5acdf5a8b3c927b68f4b7a2e9c3b2d5f8e1c7a3d2ef` | Party 1's s₁ encrypted and stored on ZK nodes |
-| 10 | `submit_key_share` P2 | `b8c3e1a6f2d5c7e9a4b3d2f1c8e7a6b5c4d3e2f1a9b8c7d6e5f4a3b2c1d0e9f8` | Party 2's s₂ encrypted and stored on ZK nodes |
-| 11 | `submit_key_share` P3 | `c7d6e5f4a3b2c1d0e9f8b8c3e1a6f2d5a4b3d2f1c8e7a6b5c4d3e2f1a9b2c3d4` | Party 3's s₃ encrypted and stored on ZK nodes |
-| 12 | `dkg_complete_keygen` | `a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2` | Key marked Complete. Public key stored, ready for signing |
+| 1 | `dkg_create_key` | `c890897e3d2cd5017e1977d9715cf35bad60e1faacdc29cf4eda4c172f7da3fd` | Created key slot for 3 parties, phase → Committing |
+| 2 | `dkg_commit` P1 | `80c0d0710cdbe238a09791d5e4ab30c5d14cff933d0c404d0a2820a6935de223` | Party 1 committed SHA-256(P₁) — locked in their choice |
+| 3 | `dkg_commit` P2 | `23a7ac5fb832d25e5778e99783350307bfb9f6b2c69740493022d8952c170113` | Party 2 committed SHA-256(P₂) |
+| 4 | `dkg_commit` P3 | `facdbb30712af48df6a4686ac2329c8343c350e5cfe0689b2169d2fdf016f2a9` | Party 3 committed SHA-256(P₃). All committed → phase = Revealing |
+| 5 | `dkg_reveal` P1 | `570650277facf4f29fea83c2f2e2fc0d9546adb33d21fe8be77dd6d86f996f44` | Party 1 revealed P₁. Contract verified SHA-256(P₁) == C₁ ✓ |
+| 6 | `dkg_reveal` P2 | `6bb08325b66fee5c5d1efa47aaf54e2a6cbd041569c7a749b7f8a7551d6ce8de` | Party 2 revealed P₂. Contract verified SHA-256(P₂) == C₂ ✓ |
+| 7 | `dkg_reveal` P3 | `e6a0acc9539288d58909224b2736e80b7d227f186f001e74c9f0b580d020257c` | Party 3 revealed P₃. All revealed → ready to finalize |
+| 8 | `dkg_finalize` | `92046089780a4ef3d55a0c5343218bd431313fcdbd25cdc6f0c2e3dc423dfe66` | Contract computed P = P₁ + P₂ + P₃ (EC point addition) |
+| 9-12 | `submit_key_share` ×4 | `65b3b..1f1df`, `196ae..f3ed5`, `66121..9b1cc`, `cefd6..1342e` | 3 parties × 2 halves each → s₁, s₂, s₃ encrypted on ZK nodes |
+| 13 | `dkg_complete_keygen` | `94573a073ab8ea0cdf177542cf4fef81f1260c27a1db54fe096fed10202c10df` | Key marked Complete. Public key stored, ready for signing |
 
-### GG20 Signing Phase — Signing Without the Key (12 transactions)
+### GG20 Signing Phase — Signing Without the Key
 
 | # | Action | Tx Hash | What Happened |
 |---|--------|---------|---------------|
-| 13 | `gg20_start_signing` | `d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5` | Recorded message hash, phase → ThresholdSigning |
-| 14 | `submit_gamma_point` P1 | `e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6` | Party 1 submitted Γ₁ = γ₁ × G |
-| 15 | `submit_gamma_point` P2 | `f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7` | Party 2 submitted Γ₂ = γ₂ × G |
-| 16 | `submit_gamma_point` P3 | `a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8` | Party 3 submitted Γ₃ = γ₃ × G. Γ = Γ₁+Γ₂+Γ₃ computed |
-| 17 | `nonce_commit` | `b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9` | Coordinator committed SHA-256(δ) |
-| 18 | `nonce_reveal` | `c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0` | Revealed δ. Contract verified hash. R = Γ + δ×G computed |
-| 19 | `finalize_nonce_and_sign` | `d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1` | Contract computed r = R.x mod n, distributed k⁻¹ |
-| 20 | `submit_partial_sig` P1 | `e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2` | σ₁ = k⁻¹ × (z/3 + r × s₁) submitted |
-| 21 | `submit_partial_sig` P2 | `f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3` | σ₂ = k⁻¹ × (z/3 + r × s₂) submitted |
-| 22 | `submit_partial_sig` P3 | `a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4` | σ₃ = k⁻¹ × (z/3 + r × s₃) submitted |
-| 23 | `finalize_gg20_sig` | `b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5` | σ = σ₁+σ₂+σ₃, low-s normalized, ECDSA verified ✓ |
-| 24 | `signing_complete` | `c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6` | Signature stored on-chain, phase → Idle |
+| 14 | `sign_message` | `8d6491a6160a4e2c164b4ebb9aa8ce946db3a4e41f751bebb8a81d40ebbc59e9` | Queued EVM transaction hash for signing |
+| 15 | `gg20_start_signing` | `5e5595fde234f2207f9ead56c6920035305f6b939521013a30c93d9c545d856b` | Begin signing ceremony, phase → ThresholdSigning |
+| 16 | `submit_delta` P1 | `4f8846ab8fbb641caf6d76ca4171be5b0de57e56508bbe71987f964666ac0b35` | Party 1 submits δ₁ (share of k×γ) |
+| 17 | `submit_delta` P2 | `1e2892f24ecc6587b9e3c862f9ddf5f622d79b0b291f3a2e361ea510679b2dce` | Party 2 submits δ₂ |
+| 18 | `submit_delta` P3 | `01a57cb1b2f27c4bb787515000916de472353f6ef8f64de5d1fab729aec4390f` | Party 3 submits δ₃. δ = δ₁+δ₂+δ₃ = k×γ |
+| 19 | `submit_gamma_point` P1 | `e5ee5f306ba6cef63f639f4b5dd53bb85437e685fde2d60760ae3fb4916761fe` | Party 1 submits Γ₁ = γ₁ × G |
+| 20 | `submit_gamma_point` P2 | `1040ca81d9dd53ae2bd9a12da0dc4766870a3cd93913562f368b67d7a0cd4586` | Party 2 submits Γ₂ = γ₂ × G |
+| 21 | `submit_gamma_point` P3 | `76c479845b3686c0ae26b7a1cf6c747b0be0198ecf4c5acce742c8f1cd8a032e` | Party 3 submits Γ₃ = γ₃ × G. Γ = Γ₁+Γ₂+Γ₃ |
+| 22 | `gg20_finalize_r` | `377e484146a1fbf710029c9df113d2d5016feb3def544299b9b355146b42df46` | R = δ⁻¹ × Γ = k⁻¹ × G (THE MAGIC). Extract r = R.x mod n |
+| 23 | `commit_partial_sig` P1 | `7354e882f1873d46625c5e22e74a8b41f6f0c16244cb6d324409bbd59e2af9d4` | Party 1 commits hash(σ₁) — sealed envelope |
+| 24 | `commit_partial_sig` P2 | `8d96efbc8d7d4222fa65e2673a7931048dbf4b523e4f66c2097d6c807ae2f960` | Party 2 commits hash(σ₂) |
+| 25 | `commit_partial_sig` P3 | `e788515e8c1e9949eb88f61e363201a3b4e3d183cfa78858e46a13e989fe5be8` | Party 3 commits hash(σ₃) |
+| 26 | `submit_partial_sig` P1 | `8ffe306954515d73c2fde2386d724ce1d0326e0fd4a0ed2375d68422ada6b977` | Party 1 reveals σ₁, contract checks hash ✓ |
+| 27 | `submit_partial_sig` P2 | `9a31f873c75f1a18c99f1ed9c721eafe22930fb6ecaa3f18302fd8810198577d` | Party 2 reveals σ₂, contract checks hash ✓ |
+| 28 | `submit_partial_sig` P3 | `3a292217ee3ce98d55cf4af090df96ab51d30e04f4c9c11379395a3370b09036` | Party 3 reveals σ₃. σ = σ₁+σ₂+σ₃, low-s normalize, ECDSA verify ✓ |
 
 ### Ethereum Verification
 
@@ -898,7 +899,9 @@ All transactions viewable at: `https://browser.testnet.partisiablockchain.com/tr
 |------|-------|
 | Sepolia Tx | [`0x09ec739d1e7cf9a91019c393abc9eee91042eedf20b4ec9f70630f7b93b98d41`](https://sepolia.etherscan.io/tx/0x09ec739d1e7cf9a91019c393abc9eee91042eedf20b4ec9f70630f7b93b98d41) |
 | Block | 10432151 |
-| From | The Ethereum address derived from the DKG public key |
+| From | `0x46fe38ef06876C3d76E03D1e5991eD28FF2714ad` (derived from DKG public key) |
+| To | `0x742d35cc6634c0532925a3b844bc9e7595f2bd00` |
+| Value | 0.0001 ETH |
 | Proof | The signature produced by GG20 (without ever having the private key) successfully sent an ETH transaction |
 
 ---
