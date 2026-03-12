@@ -4,7 +4,6 @@
 //! Shamir-split key storage on ZK nodes instead of plain engine commitments.
 
 use create_type_spec_derive::CreateTypeSpec;
-use pbc_contract_common::address::Address;
 use pbc_contract_common::avl_tree_map::AvlTreeMap;
 use read_write_rpc_derive::ReadWriteRPC;
 use read_write_state_derive::ReadWriteState;
@@ -50,6 +49,12 @@ pub enum ZkSigningPhase {
     /// Threshold ECDSA: collecting partial signatures (key NEVER reconstructed).
     #[discriminant(4)]
     ThresholdSigning { task_id: u32 },
+    /// Distributed nonce: parties committing hash(R_i).
+    #[discriminant(5)]
+    NonceCommitting { task_id: u32 },
+    /// Distributed nonce: parties revealing R_i points.
+    #[discriminant(6)]
+    NonceRevealing { task_id: u32 },
 }
 
 /// Metadata attached to each ZK secret variable (share half).
@@ -161,15 +166,15 @@ pub struct ZkKeyState {
 
     /// Number of parties expected in the DKG ceremony.
     pub dkg_num_parties: u8,
-    /// DKG commitment addresses (parallel with dkg_commitment_hashes).
-    pub dkg_commit_addresses: Vec<Address>,
+    /// DKG commitment party indices (parallel with dkg_commitment_hashes).
+    pub dkg_commit_indices: Vec<u8>,
     /// DKG commitment hashes — SHA-256 of each party's compressed public key share.
-    /// Each entry is 32 bytes. Parallel with dkg_commit_addresses.
+    /// Each entry is 32 bytes. Parallel with dkg_commit_indices.
     pub dkg_commitment_hashes: Vec<Vec<u8>>,
-    /// DKG reveal addresses (parallel with dkg_reveal_pubkeys).
-    pub dkg_reveal_addresses: Vec<Address>,
+    /// DKG reveal party indices (parallel with dkg_reveal_pubkeys).
+    pub dkg_reveal_indices: Vec<u8>,
     /// DKG revealed public key shares (33 bytes compressed secp256k1 each).
-    /// Parallel with dkg_reveal_addresses.
+    /// Parallel with dkg_reveal_indices.
     pub dkg_reveal_pubkeys: Vec<Vec<u8>>,
 
     // --- Threshold signing fields (flattened) ---
@@ -190,6 +195,62 @@ pub struct ZkKeyState {
     /// Threshold signing: partial signature scalars (32 bytes each).
     /// Parallel with ts_partial_indices.
     pub ts_partial_values: Vec<Vec<u8>>,
+
+    // --- Distributed nonce ceremony fields (flattened) ---
+
+    /// Nonce ceremony: number of parties expected to contribute.
+    pub nc_num_parties: u8,
+    /// Nonce ceremony: which party index is coordinator this round (rotated).
+    pub nc_coordinator: u8,
+    /// Nonce ceremony: party indices that have committed hash(R_i).
+    pub nc_commit_indices: Vec<u8>,
+    /// Nonce ceremony: commitment hashes (SHA-256 of compressed R_i point).
+    pub nc_commitment_hashes: Vec<Vec<u8>>,
+    /// Nonce ceremony: party indices that have revealed R_i.
+    pub nc_reveal_indices: Vec<u8>,
+    /// Nonce ceremony: revealed R_i points (33 bytes compressed each).
+    pub nc_reveal_points: Vec<Vec<u8>>,
+
+    // --- Partial signature commitment fields (flattened) ---
+
+    /// Partial commitment: party indices that have committed hash(σ_i).
+    pub ps_commit_indices: Vec<u8>,
+    /// Partial commitment: SHA-256 hashes of partial signatures.
+    pub ps_commit_hashes: Vec<Vec<u8>>,
+
+    /// Signing round counter (used for coordinator rotation).
+    pub signing_round: u32,
+
+    // --- GG20 fields (fully trustless signing) ---
+
+    /// GG20: delta values δ_i submitted by each party (32 bytes each).
+    pub gg20_delta_indices: Vec<u8>,
+    /// GG20: delta values (parallel with gg20_delta_indices).
+    pub gg20_delta_values: Vec<Vec<u8>>,
+    /// GG20: gamma point party indices (parallel with gg20_gamma_points).
+    pub gg20_gamma_indices: Vec<u8>,
+    /// GG20: gamma points (compressed, 33 bytes each).
+    pub gg20_gamma_points: Vec<Vec<u8>>,
+    /// GG20: computed combined r bytes (set after finalize).
+    pub gg20_r_bytes: Vec<u8>,
+    /// GG20: computed recovery ID.
+    pub gg20_recovery_id: u8,
+    /// GG20: number of parties expected for this round.
+    pub gg20_num_parties: u8,
+    /// GG20: whether GG20 signing is active.
+    pub gg20_active: bool,
+    /// GG20: delta commitment indices (parties that committed hash(δ_i)).
+    pub gg20_delta_commit_indices: Vec<u8>,
+    /// GG20: delta commitment hashes (SHA-256 of δ_i bytes, parallel with indices).
+    pub gg20_delta_commit_hashes: Vec<Vec<u8>>,
+
+    // --- Timeout / Abort fields ---
+
+    /// Block number by which the current signing round must complete.
+    /// After this block, anyone can call abort to reset the signing state.
+    pub signing_deadline_block: i64,
+    /// Number of blocks allowed for a signing round (configurable, default 100 ~= 5 minutes).
+    pub signing_timeout_blocks: i64,
 }
 
 impl ZkKeyState {
@@ -209,9 +270,9 @@ impl ZkKeyState {
             signing_information: AvlTreeMap::new(),
             opened_shares: Vec::new(),
             dkg_num_parties: 0,
-            dkg_commit_addresses: Vec::new(),
+            dkg_commit_indices: Vec::new(),
             dkg_commitment_hashes: Vec::new(),
-            dkg_reveal_addresses: Vec::new(),
+            dkg_reveal_indices: Vec::new(),
             dkg_reveal_pubkeys: Vec::new(),
             ts_active: false,
             ts_task_id: 0,
@@ -220,6 +281,27 @@ impl ZkKeyState {
             ts_num_parties: 0,
             ts_partial_indices: Vec::new(),
             ts_partial_values: Vec::new(),
+            nc_num_parties: 0,
+            nc_coordinator: 0,
+            nc_commit_indices: Vec::new(),
+            nc_commitment_hashes: Vec::new(),
+            nc_reveal_indices: Vec::new(),
+            nc_reveal_points: Vec::new(),
+            ps_commit_indices: Vec::new(),
+            ps_commit_hashes: Vec::new(),
+            signing_round: 0,
+            gg20_delta_indices: Vec::new(),
+            gg20_delta_values: Vec::new(),
+            gg20_gamma_indices: Vec::new(),
+            gg20_gamma_points: Vec::new(),
+            gg20_r_bytes: Vec::new(),
+            gg20_recovery_id: 0,
+            gg20_num_parties: 0,
+            gg20_active: false,
+            gg20_delta_commit_indices: Vec::new(),
+            gg20_delta_commit_hashes: Vec::new(),
+            signing_deadline_block: 0,
+            signing_timeout_blocks: 100, // ~5 minutes on Partisia
         }
     }
 

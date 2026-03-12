@@ -110,24 +110,26 @@ export function buildDkgCreateKeyArgs(
 
 /**
  * Build RPC args for dkg_commit (shortname 0x21).
- * Args: key_id(u32), commitment_hash(Vec<u8>)
+ * Args: key_id(u32), party_index(u8), commitment_hash(Vec<u8>)
  */
 export function buildDkgCommitArgs(
   keyId: number,
+  partyIndex: number,
   commitmentHash: Uint8Array
 ): Uint8Array {
-  return new Uint8Array([...encodeU32(keyId), ...encodeVec(commitmentHash)]);
+  return new Uint8Array([...encodeU32(keyId), partyIndex, ...encodeVec(commitmentHash)]);
 }
 
 /**
  * Build RPC args for dkg_reveal (shortname 0x22).
- * Args: key_id(u32), public_key_share(Vec<u8>)
+ * Args: key_id(u32), party_index(u8), public_key_share(Vec<u8>)
  */
 export function buildDkgRevealArgs(
   keyId: number,
+  partyIndex: number,
   publicKeyShare: Uint8Array
 ): Uint8Array {
-  return new Uint8Array([...encodeU32(keyId), ...encodeVec(publicKeyShare)]);
+  return new Uint8Array([...encodeU32(keyId), partyIndex, ...encodeVec(publicKeyShare)]);
 }
 
 /**

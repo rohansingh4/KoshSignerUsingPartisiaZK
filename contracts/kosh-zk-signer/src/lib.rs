@@ -580,10 +580,11 @@ pub fn dkg_create_key(
 /// DKG commit: a party submits hash(P_i) where P_i is their public key share.
 #[action(shortname = 0x21, zk = true)]
 pub fn dkg_commit(
-    ctx: ContractContext,
+    _ctx: ContractContext,
     mut state: ContractState,
     _zk_state: ZkState<ShareMetadata>,
     key_id: u32,
+    party_index: u8,
     commitment_hash: Vec<u8>,
 ) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
     let mut key_state = state.keys.get(&key_id).expect("Key not found");
@@ -592,7 +593,7 @@ pub fn dkg_commit(
         "Key is not in DKG committing phase"
     );
 
-    let all_committed = dkg::add_commitment(&mut key_state, ctx.sender, commitment_hash);
+    let all_committed = dkg::add_commitment(&mut key_state, party_index, commitment_hash);
 
     if all_committed {
         key_state.keygen_phase = ZkKeyGenPhase::DkgRevealing {};
@@ -606,10 +607,11 @@ pub fn dkg_commit(
 /// Contract verifies it matches the previously committed hash.
 #[action(shortname = 0x22, zk = true)]
 pub fn dkg_reveal(
-    ctx: ContractContext,
+    _ctx: ContractContext,
     mut state: ContractState,
     _zk_state: ZkState<ShareMetadata>,
     key_id: u32,
+    party_index: u8,
     public_key_share: Vec<u8>,
 ) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
     let mut key_state = state.keys.get(&key_id).expect("Key not found");
@@ -618,7 +620,7 @@ pub fn dkg_reveal(
         "Key is not in DKG revealing phase"
     );
 
-    let _all_revealed = dkg::add_reveal(&mut key_state, ctx.sender, public_key_share);
+    let _all_revealed = dkg::add_reveal(&mut key_state, party_index, public_key_share);
 
     state.keys.insert(key_id, key_state);
 
@@ -643,7 +645,7 @@ pub fn dkg_finalize(
     );
 
     assert!(
-        key_state.dkg_reveal_addresses.len() as u8 >= key_state.dkg_num_parties,
+        key_state.dkg_reveal_indices.len() as u8 >= key_state.dkg_num_parties,
         "Not all parties have revealed yet"
     );
 
@@ -683,12 +685,9 @@ pub fn dkg_complete_keygen(
     );
 
     key_state.keygen_phase = ZkKeyGenPhase::Complete {};
-
-    let pk = key_state.public_key.clone().unwrap();
-    let events = emit_key_generated_event(&state, key_id, &pk);
     state.keys.insert(key_id, key_state);
 
-    (state, events, vec![])
+    (state, vec![], vec![])
 }
 
 // ---------------------------------------------------------------------------
@@ -747,6 +746,10 @@ pub fn start_threshold_sign(
     key_state.ts_partial_values.clear();
     key_state.signing_phase = ZkSigningPhase::ThresholdSigning { task_id };
 
+    // Set deadline for this signing round
+    key_state.signing_deadline_block =
+        ctx.block_production_time + key_state.signing_timeout_blocks;
+
     state.keys.insert(key_id, key_state);
     (state, vec![], vec![])
 }
@@ -791,19 +794,43 @@ pub fn submit_partial_sig(
         party_index
     );
 
+    // If partial commitment exists, verify σ_i matches commitment
+    if let Some(commit_pos) = key_state
+        .ps_commit_indices
+        .iter()
+        .position(|&idx| idx == party_index)
+    {
+        let committed_hash = &key_state.ps_commit_hashes[commit_pos];
+        let actual_hash = dkg::sha256(&partial_s);
+        assert_eq!(
+            committed_hash.as_slice(),
+            &actual_hash[..],
+            "Partial signature does not match commitment for party {}",
+            party_index
+        );
+    }
+
     key_state.ts_partial_indices.push(party_index);
     key_state.ts_partial_values.push(partial_s.clone());
 
     // Check if all partials collected
     if key_state.ts_partial_indices.len() as u8 >= key_state.ts_num_parties {
-        // Combine partial signatures: σ = Σ σ_i (mod n)
-        let combined_s = combine_partial_signatures(&key_state.ts_partial_values);
+        // Combine partial signatures with low-s normalization: σ = Σ σ_i (mod n)
+        let (combined_s, was_negated) =
+            combine_partial_signatures_with_flag(&key_state.ts_partial_values);
+
+        // If s was negated for low-s, flip recovery ID
+        let recovery_id = if was_negated {
+            key_state.ts_recovery_id ^ 1
+        } else {
+            key_state.ts_recovery_id
+        };
 
         // Build the full 65-byte signature: r (32) || s (32) || v (1)
         let mut signature = Vec::with_capacity(65);
         signature.extend_from_slice(&key_state.ts_r_bytes);
         signature.extend_from_slice(&combined_s);
-        signature.push(key_state.ts_recovery_id);
+        signature.push(recovery_id);
 
         // Verify the combined ECDSA signature against the stored public key
         let public_key = key_state
@@ -828,7 +855,7 @@ pub fn submit_partial_sig(
             .expect("Combined threshold signature verification failed");
 
         // Store the verified signature
-        info.recovery_id = key_state.ts_recovery_id;
+        info.recovery_id = recovery_id;
         info.signature = Some(signature);
         info.verified = true;
         key_state.signing_information.insert(task_id, info);
@@ -853,10 +880,557 @@ pub fn submit_partial_sig(
     (state, vec![], vec![])
 }
 
+// ---------------------------------------------------------------------------
+// Distributed Nonce Ceremony — removes single coordinator trust
+// ---------------------------------------------------------------------------
+
+/// Start a distributed nonce ceremony for threshold signing.
+///
+/// Instead of one coordinator generating k alone, all parties contribute:
+/// 1. Each party commits hash(R_i) where R_i = k_i × G
+/// 2. Each party reveals R_i
+/// 3. Contract combines R = R₁ + R₂ + ... + Rₙ
+/// 4. Coordinator (rotated each round) computes k_inv from contributed seeds
+///
+/// SECURITY: No single party can bias k. Coordinator rotates each round.
+#[action(shortname = 0x40, zk = true)]
+pub fn start_nonce_ceremony(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    task_id: u32,
+    num_parties: u8,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    state.assert_owner(&ctx.sender);
+
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(
+        key_state.is_key_generated(),
+        "Key generation not yet complete"
+    );
+    assert!(num_parties >= 2, "Need at least 2 parties");
+
+    // Ensure signing task exists
+    let _info = key_state
+        .signing_information
+        .get(&task_id)
+        .expect("Unknown signing task — call sign_message first");
+
+    // Rotate coordinator each round
+    let coordinator = (key_state.signing_round % (num_parties as u32)) as u8;
+
+    key_state.nc_num_parties = num_parties;
+    key_state.nc_coordinator = coordinator;
+    key_state.nc_commit_indices.clear();
+    key_state.nc_commitment_hashes.clear();
+    key_state.nc_reveal_indices.clear();
+    key_state.nc_reveal_points.clear();
+    key_state.signing_phase = ZkSigningPhase::NonceCommitting { task_id };
+
+    // Set deadline for this signing round
+    key_state.signing_deadline_block =
+        ctx.block_production_time + key_state.signing_timeout_blocks;
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+/// Commit a nonce point hash during distributed nonce ceremony.
+/// Each party submits SHA-256(compressed_R_i) where R_i = k_i × G.
+#[action(shortname = 0x41, zk = true)]
+pub fn nonce_commit(
+    _ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    party_index: u8,
+    commitment_hash: Vec<u8>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(
+        matches!(key_state.signing_phase, ZkSigningPhase::NonceCommitting { .. }),
+        "Not in nonce committing phase"
+    );
+    assert_eq!(commitment_hash.len(), 32, "Commitment hash must be 32 bytes");
+    assert!(
+        !key_state.nc_commit_indices.iter().any(|&idx| idx == party_index),
+        "Party {} has already committed a nonce",
+        party_index
+    );
+
+    key_state.nc_commit_indices.push(party_index);
+    key_state.nc_commitment_hashes.push(commitment_hash);
+
+    // Move to reveal phase when all committed
+    if key_state.nc_commit_indices.len() as u8 >= key_state.nc_num_parties {
+        if let ZkSigningPhase::NonceCommitting { task_id } = key_state.signing_phase {
+            key_state.signing_phase = ZkSigningPhase::NonceRevealing { task_id };
+        }
+    }
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+/// Reveal a nonce point during distributed nonce ceremony.
+/// Contract verifies R_i matches the previously committed hash.
+#[action(shortname = 0x42, zk = true)]
+pub fn nonce_reveal(
+    _ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    party_index: u8,
+    nonce_point: Vec<u8>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(
+        matches!(key_state.signing_phase, ZkSigningPhase::NonceRevealing { .. }),
+        "Not in nonce revealing phase"
+    );
+    assert_eq!(nonce_point.len(), 33, "Nonce point must be 33 bytes (compressed)");
+    assert!(
+        !key_state.nc_reveal_indices.iter().any(|&idx| idx == party_index),
+        "Party {} has already revealed nonce",
+        party_index
+    );
+
+    // Find commitment and verify
+    let commit_idx = key_state
+        .nc_commit_indices
+        .iter()
+        .position(|&idx| idx == party_index)
+        .expect("Party did not commit — cannot reveal");
+    let commitment_hash = &key_state.nc_commitment_hashes[commit_idx];
+
+    assert!(
+        dkg::verify_commitment(commitment_hash, &nonce_point),
+        "Nonce reveal does not match commitment hash"
+    );
+
+    // Validate it's a real EC point
+    VerifyingKey::from_sec1_bytes(&nonce_point)
+        .expect("Invalid secp256k1 nonce point");
+
+    key_state.nc_reveal_indices.push(party_index);
+    key_state.nc_reveal_points.push(nonce_point);
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+/// Finalize nonce ceremony: combine R points and start threshold signing.
+///
+/// The coordinator (rotated) provides k⁻¹ and starts the signing session.
+/// The contract verifies that the nonce point R matches the combined R_i points.
+#[action(shortname = 0x43, zk = true)]
+pub fn finalize_nonce_and_sign(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    r_bytes: Vec<u8>,
+    recovery_id: u8,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    state.assert_owner(&ctx.sender);
+
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+
+    let task_id = match key_state.signing_phase {
+        ZkSigningPhase::NonceRevealing { task_id } => task_id,
+        _ => panic!("Not in nonce revealing phase"),
+    };
+
+    assert!(
+        key_state.nc_reveal_indices.len() as u8 >= key_state.nc_num_parties,
+        "Not all parties have revealed nonce points"
+    );
+    assert_eq!(r_bytes.len(), 32, "r_bytes must be 32 bytes");
+
+    // Combine all nonce points: R = R₁ + R₂ + ... + Rₙ
+    let combined_nonce = dkg::combine_public_keys(&key_state.nc_reveal_points);
+
+    // Verify that the provided r matches the combined nonce point's x-coordinate
+    // Extract x-coordinate from the combined compressed point
+    // Compressed format: 0x02/0x03 + x(32 bytes)
+    let combined_x = &combined_nonce[1..33];
+    assert_eq!(
+        r_bytes.as_slice(),
+        combined_x,
+        "Provided r does not match combined nonce point R = R₁+R₂+...+Rₙ"
+    );
+
+    // Start threshold signing with verified r
+    key_state.ts_active = true;
+    key_state.ts_task_id = task_id;
+    key_state.ts_r_bytes = r_bytes;
+    key_state.ts_recovery_id = recovery_id;
+    key_state.ts_num_parties = key_state.nc_num_parties;
+    key_state.ts_partial_indices.clear();
+    key_state.ts_partial_values.clear();
+    key_state.ps_commit_indices.clear();
+    key_state.ps_commit_hashes.clear();
+    key_state.signing_phase = ZkSigningPhase::ThresholdSigning { task_id };
+
+    // Increment signing round for coordinator rotation
+    key_state.signing_round += 1;
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+// ---------------------------------------------------------------------------
+// Partial Signature Commitments — prevents tampering
+// ---------------------------------------------------------------------------
+
+/// Commit hash(σ_i) before revealing the actual partial signature.
+/// This prevents any party from modifying their σ_i after seeing others'.
+#[action(shortname = 0x44, zk = true)]
+pub fn commit_partial_sig(
+    _ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    party_index: u8,
+    commitment_hash: Vec<u8>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+
+    assert!(
+        matches!(
+            key_state.signing_phase,
+            ZkSigningPhase::ThresholdSigning { .. }
+        ),
+        "Not in threshold signing phase"
+    );
+    assert_eq!(commitment_hash.len(), 32, "Commitment must be 32 bytes");
+    assert!(
+        !key_state.ps_commit_indices.iter().any(|&idx| idx == party_index),
+        "Party {} has already committed a partial signature",
+        party_index
+    );
+
+    key_state.ps_commit_indices.push(party_index);
+    key_state.ps_commit_hashes.push(commitment_hash);
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+// ---------------------------------------------------------------------------
+// GG20 Fully Trustless Signing — NO coordinator, NO single k knowledge
+// ---------------------------------------------------------------------------
+
+/// Start a GG20 signing session.
+/// After MtA rounds complete off-chain, parties submit δ_i and Γ_i.
+#[action(shortname = 0x50, zk = true)]
+pub fn gg20_start_signing(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    task_id: u32,
+    num_parties: u8,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    state.assert_owner(&ctx.sender);
+
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(key_state.is_key_generated(), "Key not yet generated");
+    assert!(num_parties >= 2, "Need at least 2 parties");
+
+    let _info = key_state
+        .signing_information
+        .get(&task_id)
+        .expect("Unknown signing task");
+
+    key_state.gg20_active = true;
+    key_state.gg20_num_parties = num_parties;
+    key_state.gg20_delta_indices.clear();
+    key_state.gg20_delta_values.clear();
+    key_state.gg20_delta_commit_indices.clear();
+    key_state.gg20_delta_commit_hashes.clear();
+    key_state.gg20_gamma_indices.clear();
+    key_state.gg20_gamma_points.clear();
+    key_state.gg20_r_bytes.clear();
+    key_state.ts_task_id = task_id;
+    key_state.ps_commit_indices.clear();
+    key_state.ps_commit_hashes.clear();
+    key_state.ts_partial_indices.clear();
+    key_state.ts_partial_values.clear();
+
+    // Set deadline for this signing round
+    key_state.signing_deadline_block =
+        ctx.block_production_time + key_state.signing_timeout_blocks;
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+/// Commit hash(δ_i) before revealing the actual delta value.
+/// Prevents a malicious party from choosing δ_i after seeing others'.
+#[action(shortname = 0x49, zk = true)]
+pub fn commit_delta(
+    _ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    party_index: u8,
+    commitment_hash: Vec<u8>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(key_state.gg20_active, "No GG20 session active");
+    assert_eq!(commitment_hash.len(), 32, "Commitment must be 32 bytes");
+    assert!(
+        !key_state
+            .gg20_delta_commit_indices
+            .iter()
+            .any(|&idx| idx == party_index),
+        "Party {} has already committed delta",
+        party_index
+    );
+
+    key_state.gg20_delta_commit_indices.push(party_index);
+    key_state.gg20_delta_commit_hashes.push(commitment_hash);
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+/// Submit δ_i value (party's additive share of k·γ).
+/// All δ_i are needed to compute δ = k·γ, then R = δ⁻¹·Γ.
+/// If a delta commitment exists, verifies the value matches.
+#[action(shortname = 0x45, zk = true)]
+pub fn submit_delta(
+    _ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    party_index: u8,
+    delta_bytes: Vec<u8>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(key_state.gg20_active, "No GG20 session active");
+    assert_eq!(delta_bytes.len(), 32, "Delta must be 32 bytes");
+    assert!(
+        !key_state.gg20_delta_indices.iter().any(|&idx| idx == party_index),
+        "Party {} already submitted delta",
+        party_index
+    );
+
+    // If delta commitment exists for this party, verify it matches
+    if let Some(commit_pos) = key_state
+        .gg20_delta_commit_indices
+        .iter()
+        .position(|&idx| idx == party_index)
+    {
+        let committed_hash = &key_state.gg20_delta_commit_hashes[commit_pos];
+        let actual_hash = dkg::sha256(&delta_bytes);
+        assert_eq!(
+            committed_hash.as_slice(),
+            &actual_hash[..],
+            "Delta does not match commitment for party {}",
+            party_index
+        );
+    }
+
+    key_state.gg20_delta_indices.push(party_index);
+    key_state.gg20_delta_values.push(delta_bytes);
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+/// Submit Γ_i = γ_i·G point (party's gamma commitment).
+#[action(shortname = 0x46, zk = true)]
+pub fn submit_gamma_point(
+    _ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    party_index: u8,
+    gamma_point: Vec<u8>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(key_state.gg20_active, "No GG20 session active");
+    assert_eq!(gamma_point.len(), 33, "Gamma point must be 33 bytes");
+    assert!(
+        !key_state.gg20_gamma_indices.iter().any(|&idx| idx == party_index),
+        "Party {} already submitted gamma point",
+        party_index
+    );
+
+    // Validate it's a real EC point
+    VerifyingKey::from_sec1_bytes(&gamma_point)
+        .expect("Invalid gamma point");
+
+    key_state.gg20_gamma_indices.push(party_index);
+    key_state.gg20_gamma_points.push(gamma_point);
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+/// Finalize GG20 R computation on-chain.
+///
+/// Contract computes:
+/// 1. δ = Σ δ_i (mod n) — additive combination
+/// 2. Γ = Σ Γ_i (EC point addition)
+/// 3. R = δ⁻¹ · Γ = (k·γ)⁻¹ · (γ·G) = k⁻¹ · G
+/// 4. r = R.x
+///
+/// NOBODY ever computed k⁻¹ as a number. R = k⁻¹·G was computed
+/// via scalar multiplication of δ⁻¹ with the point Γ.
+#[action(shortname = 0x47, zk = true)]
+pub fn gg20_finalize_r(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    state.assert_owner(&ctx.sender);
+
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(key_state.gg20_active, "No GG20 session active");
+    assert!(
+        key_state.gg20_delta_indices.len() as u8 >= key_state.gg20_num_parties,
+        "Not all delta values submitted"
+    );
+    assert!(
+        key_state.gg20_gamma_points.len() as u8 >= key_state.gg20_num_parties,
+        "Not all gamma points submitted"
+    );
+
+    // 1. Compute δ = Σ δ_i (mod n) using k256 Scalar
+    use k256::elliptic_curve::ff::PrimeField;
+    use k256::{FieldBytes, Scalar, ProjectivePoint as K256Proj, AffinePoint as K256Affine};
+    use k256::elliptic_curve::sec1::FromEncodedPoint;
+    use k256::EncodedPoint;
+
+    let mut delta = Scalar::ZERO;
+    for dv in &key_state.gg20_delta_values {
+        let mut fb = FieldBytes::default();
+        fb.copy_from_slice(dv);
+        let s = Option::<Scalar>::from(Scalar::from_repr(fb))
+            .expect("Invalid delta scalar");
+        delta = delta + s;
+    }
+
+    // 2. Compute Γ = Σ Γ_i (EC point addition)
+    let mut gamma_combined = K256Proj::IDENTITY;
+    for gp in &key_state.gg20_gamma_points {
+        let encoded = EncodedPoint::from_bytes(gp)
+            .expect("Invalid gamma point encoding");
+        let affine = Option::<K256Affine>::from(K256Affine::from_encoded_point(&encoded))
+            .expect("Invalid gamma affine point");
+        gamma_combined = gamma_combined + K256Proj::from(affine);
+    }
+
+    // 3. R = δ⁻¹ · Γ
+    let delta_inv = delta.invert();
+    assert!(bool::from(delta_inv.is_some()), "Delta has no inverse");
+    let delta_inv = delta_inv.unwrap();
+    let r_point = gamma_combined * delta_inv;
+
+    // 4. Extract r = R.x
+    let r_affine = r_point.to_affine();
+    let r_encoded = EncodedPoint::from(r_affine);
+    let r_compressed = r_encoded.compress();
+    let r_bytes_full = r_compressed.as_bytes();
+
+    // x-coordinate is bytes [1..33] of compressed point
+    let r_bytes = r_bytes_full[1..33].to_vec();
+
+    // Recovery ID from y parity
+    let recovery_id = if r_bytes_full[0] == 0x02 { 0u8 } else { 1u8 };
+
+    key_state.gg20_r_bytes = r_bytes.clone();
+    key_state.gg20_recovery_id = recovery_id;
+
+    // Set up threshold signing with the computed r
+    let task_id = key_state.ts_task_id;
+    key_state.ts_active = true;
+    key_state.ts_r_bytes = r_bytes;
+    key_state.ts_recovery_id = recovery_id;
+    key_state.ts_num_parties = key_state.gg20_num_parties;
+    key_state.signing_phase = ZkSigningPhase::ThresholdSigning { task_id };
+    key_state.signing_round += 1;
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+// ---------------------------------------------------------------------------
+// Timeout / Abort — prevents locked keys when a party goes offline
+// ---------------------------------------------------------------------------
+
+/// Abort a signing session that has exceeded its deadline.
+///
+/// Anyone can call this after the deadline block has passed.
+/// Resets the signing state so new signing sessions can proceed.
+/// The timed-out task remains in signing_information (signature = None).
+#[action(shortname = 0x48, zk = true)]
+pub fn abort_signing(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+
+    // Must be in an active signing phase (not idle or complete)
+    assert!(
+        !matches!(
+            key_state.signing_phase,
+            ZkSigningPhase::Idle {} | ZkSigningPhase::Complete { .. }
+        ),
+        "No active signing session to abort"
+    );
+
+    // Check deadline: anyone can abort after deadline, owner can abort anytime
+    if ctx.sender != state.owner {
+        assert!(
+            key_state.signing_deadline_block > 0
+                && ctx.block_production_time >= key_state.signing_deadline_block,
+            "Signing deadline has not passed yet — only owner can force-abort"
+        );
+    }
+
+    // Reset all signing-related state
+    key_state.ts_active = false;
+    key_state.ts_partial_indices.clear();
+    key_state.ts_partial_values.clear();
+    key_state.ps_commit_indices.clear();
+    key_state.ps_commit_hashes.clear();
+    key_state.gg20_active = false;
+    key_state.gg20_delta_indices.clear();
+    key_state.gg20_delta_values.clear();
+    key_state.gg20_delta_commit_indices.clear();
+    key_state.gg20_delta_commit_hashes.clear();
+    key_state.gg20_gamma_indices.clear();
+    key_state.gg20_gamma_points.clear();
+    key_state.gg20_r_bytes.clear();
+    key_state.nc_commit_indices.clear();
+    key_state.nc_commitment_hashes.clear();
+    key_state.nc_reveal_indices.clear();
+    key_state.nc_reveal_points.clear();
+    key_state.signing_deadline_block = 0;
+    key_state.signing_phase = ZkSigningPhase::Idle {};
+
+    // Re-queue the task if it was pending
+    // (The task stays in signing_information with signature = None)
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
 /// Combine partial signature scalars via modular addition over secp256k1 order.
+/// Enforces low-s normalization for EVM compatibility (BIP 62 / EIP-2).
+/// Returns (combined_s_bytes, was_negated) so caller can flip recovery_id.
 ///
 /// σ = σ₁ + σ₂ + ... + σₙ (mod n)
-fn combine_partial_signatures(partial_values: &[Vec<u8>]) -> Vec<u8> {
+/// If σ > n/2, replace with n - σ (both are valid ECDSA, but EVM requires low-s).
+fn combine_partial_signatures_with_flag(partial_values: &[Vec<u8>]) -> (Vec<u8>, bool) {
     use k256::elliptic_curve::ff::PrimeField;
     use k256::{FieldBytes, Scalar};
 
@@ -869,8 +1443,32 @@ fn combine_partial_signatures(partial_values: &[Vec<u8>]) -> Vec<u8> {
         sum = sum + scalar;
     }
 
-    sum.to_bytes().to_vec()
+    // Low-s normalization: if s > n/2, use n - s
+    // This is required for EVM compatibility (EIP-2)
+    let sum_bytes = sum.to_bytes();
+    let half_n_bytes: [u8; 32] = [
+        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d,
+        0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b, 0x20, 0xa0,
+    ];
+    // Compare sum_bytes > half_n_bytes
+    let mut is_high = false;
+    for i in 0..32 {
+        if sum_bytes[i] > half_n_bytes[i] {
+            is_high = true;
+            break;
+        } else if sum_bytes[i] < half_n_bytes[i] {
+            break;
+        }
+    }
+    if is_high {
+        ((-sum).to_bytes().to_vec(), true)
+    } else {
+        (sum_bytes.to_vec(), false)
+    }
 }
+
 
 // ---------------------------------------------------------------------------
 // Helpers

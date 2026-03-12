@@ -12,8 +12,6 @@
 use k256::elliptic_curve::sec1::FromEncodedPoint;
 use k256::{AffinePoint, EncodedPoint, ProjectivePoint};
 
-use pbc_contract_common::address::Address;
-
 use crate::signing_state::ZkKeyState;
 
 /// Verify that a revealed public key share matches its commitment hash.
@@ -49,38 +47,40 @@ pub fn combine_public_keys(pubkeys: &[Vec<u8>]) -> Vec<u8> {
 /// Add a DKG commitment. Returns true if all commitments are collected.
 pub fn add_commitment(
     key_state: &mut ZkKeyState,
-    party: Address,
+    party_index: u8,
     commitment_hash: Vec<u8>,
 ) -> bool {
     assert!(
-        !key_state.dkg_commit_addresses.iter().any(|a| *a == party),
-        "Party has already committed"
+        !key_state.dkg_commit_indices.iter().any(|&idx| idx == party_index),
+        "Party {} has already committed",
+        party_index
     );
     assert_eq!(commitment_hash.len(), 32, "Commitment hash must be 32 bytes (SHA-256)");
 
-    key_state.dkg_commit_addresses.push(party);
+    key_state.dkg_commit_indices.push(party_index);
     key_state.dkg_commitment_hashes.push(commitment_hash);
 
-    key_state.dkg_commit_addresses.len() as u8 >= key_state.dkg_num_parties
+    key_state.dkg_commit_indices.len() as u8 >= key_state.dkg_num_parties
 }
 
 /// Add a DKG reveal. Returns true if all reveals are collected.
 pub fn add_reveal(
     key_state: &mut ZkKeyState,
-    party: Address,
+    party_index: u8,
     public_key_share: Vec<u8>,
 ) -> bool {
     assert!(
-        !key_state.dkg_reveal_addresses.iter().any(|a| *a == party),
-        "Party has already revealed"
+        !key_state.dkg_reveal_indices.iter().any(|&idx| idx == party_index),
+        "Party {} has already revealed",
+        party_index
     );
     assert_eq!(public_key_share.len(), 33, "Public key share must be 33 bytes (compressed secp256k1)");
 
     // Find this party's commitment hash
     let commit_idx = key_state
-        .dkg_commit_addresses
+        .dkg_commit_indices
         .iter()
-        .position(|a| *a == party)
+        .position(|&idx| idx == party_index)
         .expect("Party did not commit — cannot reveal");
     let commitment_hash = &key_state.dkg_commitment_hashes[commit_idx];
 
@@ -95,10 +95,10 @@ pub fn add_reveal(
     let _point = Option::<AffinePoint>::from(AffinePoint::from_encoded_point(&encoded))
         .expect("Invalid secp256k1 point");
 
-    key_state.dkg_reveal_addresses.push(party);
+    key_state.dkg_reveal_indices.push(party_index);
     key_state.dkg_reveal_pubkeys.push(public_key_share);
 
-    key_state.dkg_reveal_addresses.len() as u8 >= key_state.dkg_num_parties
+    key_state.dkg_reveal_indices.len() as u8 >= key_state.dkg_num_parties
 }
 
 /// Simple SHA-256 implementation for contract environment.
