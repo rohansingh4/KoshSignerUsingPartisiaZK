@@ -54,54 +54,62 @@ Before diving into the protocol, here's **every symbol** you'll see and what it 
 | **P₂** | Party 2's public key share | P₂ = s₂ × G. Same idea. |
 | **P₃** | Party 3's public key share | P₃ = s₃ × G. Same idea. |
 
-### Signing Variables (The Nonce) — SAME k for all parties
+### Signing Variables (The Nonce) — Born Split, Just Like the Private Key
 
-**Important**: `k` is ONE number per signature. All 3 parties use the **SAME** `k` (via `k⁻¹`). It is NOT different per party.
+**k = k₁ + k₂ + k₃** — each party picks their own kᵢ. The sum k is **NEVER computed** by anyone. Same idea as the private key s = s₁+s₂+s₃.
 
-The rule "never reuse k" means: don't use the same k for **two different messages**. Each new message gets a fresh k. But for one signature, everyone shares the same k.
+The rule "never reuse k" means: don't use the same k for **two different messages**. Each new message gets fresh k₁, k₂, k₃.
 
 ```
-  Signing message A:  k = 7291...   ← all 3 parties use THIS k⁻¹
-  Signing message B:  k = 4038...   ← all 3 parties use THIS k⁻¹ (different from A!)
-  Signing message A again with k = 7291...  ← DANGER! Reusing k leaks the private key!
+  Signing message A:  k₁=random, k₂=random, k₃=random  →  k = k₁+k₂+k₃ (never computed)
+  Signing message B:  k₁=NEW,    k₂=NEW,    k₃=NEW     →  different k (never computed)
+  Reuse same k₁,k₂,k₃ for message B?  ← DANGER! Private key leaks!
 ```
 
 | Symbol | What It Is | Who Has It | Same or Different per party? | Plain English |
 |--------|-----------|------------|-----|---------------|
-| **k** | The nonce (one-time random number) | Coordinator (briefly, then deleted) | **SAME** — one k per signature, shared by all | A random number generated fresh for EACH signature. If you sign two different messages with the same k, an attacker can solve two equations and extract the private key s. That's why k is never reused. But all 3 parties use the same k for the same signature. |
-| **k⁻¹** | Modular inverse of k | All parties (coordinator distributes it) | **SAME** — everyone gets the same k⁻¹ | The number such that k × k⁻¹ = 1 (mod n). Like division: if k = 5, then k⁻¹ is the number where 5 × k⁻¹ = 1 mod n. The coordinator sends k⁻¹ to ALL parties. They all get the SAME value. They cannot recover k from k⁻¹ (one-way). |
-| **R** | Nonce point | Computed on-chain | **SAME** — one R per signature | R = k × G. A point on the curve. Its x-coordinate becomes part of the signature. |
-| **r** | x-coordinate of R | Public (part of signature) | **SAME** — one r per signature | r = R.x mod n. This is one half of the final ECDSA signature (r, σ). |
+| **k** | The full nonce | **NOBODY** — never computed! | Ghost value (like s) | k = k₁+k₂+k₃. This sum is NEVER computed by any machine. It's a ghost — mathematically real but never materialized. Just like the private key s. |
+| **k₁** | Party 1's nonce share | Only Party 1 | **DIFFERENT** — each party picks their own | A random number Party 1 generates using HMAC-DRBG seeded with their secret s₁. Nobody else knows k₁. |
+| **k₂** | Party 2's nonce share | Only Party 2 | **DIFFERENT** | Same idea, Party 2's own random nonce share. |
+| **k₃** | Party 3's nonce share | Only Party 3 | **DIFFERENT** | Same idea, Party 3's own random nonce share. |
+| **k⁻¹** | Modular inverse of k | **NOBODY** — never computed as a number | Ghost value | k⁻¹ is never computed explicitly. Instead, the contract computes R = δ⁻¹ × Γ = (k×γ)⁻¹ × (γ×G) = k⁻¹×G. The POINT k⁻¹×G is known, but the NUMBER k⁻¹ never exists. |
+| **R** | Nonce point | Computed on-chain | **SAME** — one R per signature | R = k⁻¹ × G (computed as δ⁻¹ × Γ). A point on the curve. Its x-coordinate becomes part of the signature. |
+| **r** | x-coordinate of R | Public (part of signature) | **SAME** — one r per signature | r = R.x mod n. This is one half of the final ECDSA signature (r, s). |
 
 ### Signing Variables (Gamma) — DIFFERENT per party
 
-**These ARE different per party.** Each party picks their OWN random γᵢ. The gammas are used to build R on-chain without anyone sending k directly.
+**These ARE different per party.** Each party picks their OWN random γᵢ. The gammas are used to mask k so that δ = k×γ can be safely revealed.
 
 | Symbol | What It Is | Who Has It | Same or Different per party? | Plain English |
 |--------|-----------|------------|-----|---------------|
-| **γ₁** | Party 1's gamma secret | Only Party 1 | **DIFFERENT** — each party has their own | A random number Party 1 picks. Used to help build the nonce point R on-chain without revealing k. |
-| **γ₂** | Party 2's gamma secret | Only Party 2 | **DIFFERENT** | Same idea, Party 2's own random number. |
-| **γ₃** | Party 3's gamma secret | Only Party 3 | **DIFFERENT** | Same idea, Party 3's own random number. |
+| **γ₁** | Party 1's gamma secret | Only Party 1 | **DIFFERENT** — each party has their own | A random masking number Party 1 picks. Used in MtA to compute shares of k×γ without revealing k. |
+| **γ₂** | Party 2's gamma secret | Only Party 2 | **DIFFERENT** | Same idea, Party 2's own random masking number. |
+| **γ₃** | Party 3's gamma secret | Only Party 3 | **DIFFERENT** | Same idea, Party 3's own random masking number. |
 | **Γ₁** | Party 1's gamma point | Public (sent to contract) | **DIFFERENT** | Γ₁ = γ₁ × G. The public version of Party 1's gamma. Sent to the contract. |
 | **Γ₂** | Party 2's gamma point | Public | **DIFFERENT** | Γ₂ = γ₂ × G |
 | **Γ₃** | Party 3's gamma point | Public | **DIFFERENT** | Γ₃ = γ₃ × G |
 | **Γ** | Combined gamma point | Computed on-chain | **SAME** — one Γ per signature | Γ = Γ₁ + Γ₂ + Γ₃. Contract adds all gamma points together. |
-| **δ** (delta) | Nonce correction factor | Coordinator | **SAME** — one δ per signature | δ = k − (γ₁ + γ₂ + γ₃). The "gap" between the real nonce k and the sum of gammas. This lets the contract compute R = Γ + δ×G = k×G without knowing k. |
+| **δᵢ** | Party i's delta share | Only Party i | **DIFFERENT** | δᵢ = kᵢ×γᵢ + Σ(MtA cross-terms from other pairs). Each party computes their own using Paillier MtA results. |
+| **δ** | Combined k×γ value | Computed on-chain from δ₁+δ₂+δ₃ | **SAME** — one δ per signature | δ = δ₁+δ₂+δ₃ = k×γ. Safe to reveal because γ masks k (knowing k×γ doesn't tell you k). Used to compute R = δ⁻¹ × Γ = k⁻¹×G. |
+| **σᵢ** | Party i's share of k×s | Only Party i | **DIFFERENT** | σᵢ = kᵢ×sᵢ + Σ(MtA cross-terms). Used in partial signature computation. Never revealed. |
 
 ### Quick Reference: What's Same vs Different
 
 ```
-    PER SIGNATURE (same for all parties)     PER PARTY (different for each)
-    ────────────────────────────────────     ──────────────────────────────
-    k    ← one nonce per signature           s₁, s₂, s₃  ← each party's key share
-    k⁻¹  ← inverse, distributed to all       γ₁, γ₂, γ₃  ← each party's gamma
-    R    ← one nonce point                   Γ₁, Γ₂, Γ₃  ← each party's gamma point
-    r    ← one x-coordinate                  σ₁, σ₂, σ₃  ← each party's partial sig
-    z    ← the message hash                  P₁, P₂, P₃  ← each party's public share
-    δ    ← one correction factor
-    Γ    ← combined gamma point
+    GHOST VALUES (never computed)            PER PARTY (different for each)
+    ─────────────────────────────           ──────────────────────────────
+    s    ← private key (s₁+s₂+s₃)          s₁, s₂, s₃  ← each party's key share
+    k    ← nonce (k₁+k₂+k₃)               k₁, k₂, k₃  ← each party's nonce share
+    k⁻¹  ← never exists as number           γ₁, γ₂, γ₃  ← each party's gamma
+                                            Γ₁, Γ₂, Γ₃  ← each party's gamma point
+    PER SIGNATURE (computed on-chain)        δ₁, δ₂, δ₃  ← each party's delta share
+    ─────────────────────────────           σᵢ            ← each party's k×s share
+    R    ← nonce point (δ⁻¹ × Γ)           sᵢ            ← each party's partial sig
+    r    ← x-coordinate of R               P₁, P₂, P₃  ← each party's public share
+    δ    ← k×γ (from δ₁+δ₂+δ₃)
+    Γ    ← γ×G (from Γ₁+Γ₂+Γ₃)
     P    ← combined public key
-    σ    ← combined final signature
+    s    ← combined final signature
 ```
 
 ### Signing Variables (Partial Signatures)
@@ -120,7 +128,7 @@ The rule "never reuse k" means: don't use the same k for **two different message
 | Symbol | What It Is | Plain English |
 |--------|-----------|---------------|
 | **C₁, C₂, C₃** | DKG commitments | Cᵢ = SHA-256(Pᵢ). Hash of each party's public key share, submitted BEFORE revealing Pᵢ. Prevents changing your mind after seeing others. |
-| **SHA-256(δ)** | Delta commitment | Hash of δ, committed before revealing. Prevents the coordinator from changing δ after seeing gamma points. |
+| **SHA-256(δᵢ)** | Delta commitment | Hash of each party's δᵢ, committed before revealing. Prevents a party from changing their δᵢ after seeing others' values. |
 
 ### Why Reusing k Leaks the Private Key (The Math)
 
@@ -144,13 +152,17 @@ The rule "never reuse k" means: don't use the same k for **two different message
     This is a real attack — it's how the PS3 was hacked (Sony reused k).
 ```
 
-### Production GG20 Variables (Future — Not Yet Implemented)
+### Distributed Nonce & MtA Variables (IMPLEMENTED)
+
+These are all implemented in `paillier.ts`, `mta.ts`, and `gg20-signing.ts`.
 
 | Symbol | What It Is | Plain English |
 |--------|-----------|---------------|
-| **k₁, k₂, k₃** | Distributed nonce shares | In production, nobody has the full nonce k. Each party picks kᵢ, and k = k₁ + k₂ + k₃. Same idea as the private key — the nonce is also "born split." |
-| **Enc(x)** | Paillier encryption | Homomorphic encryption: you can do math on encrypted numbers without decrypting them. Used to compute cross-terms like k₁ × s₂ without either party revealing their secret. |
-| **α, β** | MtA output shares | After the MtA protocol, Party 1 has α and Party 2 has β, where α − β = k₁ × s₂. Neither party learns the cross-term alone. |
+| **k₁, k₂, k₃** | Distributed nonce shares | Nobody has the full nonce k. Each party picks kᵢ independently, and k = k₁ + k₂ + k₃. Same idea as the private key — the nonce is also "born split." Each kᵢ is generated using HMAC-DRBG seeded with the party's secret sᵢ. |
+| **Enc(x)** | Paillier encryption | Homomorphic encryption: you can do math on encrypted numbers without decrypting them. Each party generates 1024-bit Paillier keys. Used to compute cross-terms like k₁ × γ₂ without either party revealing their secret. |
+| **α, β** | MtA output shares | After the MtA protocol, Party 1 has α and Party 2 has β, where α + β = k₁ × γ₂. Neither party learns the cross-term alone. 12 MtA exchanges run for 3 parties (each pair does 2: one for k×γ, one for k×s). |
+| **δᵢ** | Party i's share of k×γ | δᵢ = kᵢ×γᵢ + Σ(MtA cross-terms). When all δᵢ are summed: δ = k×γ. This is safe to reveal because γ masks k. |
+| **σᵢ** | Party i's share of k×s | σᵢ = kᵢ×sᵢ + Σ(MtA cross-terms). Kept secret — used in partial signature computation. |
 
 ---
 
@@ -215,35 +227,37 @@ The rule "never reuse k" means: don't use the same k for **two different message
     ROUND 1: BUILD THE NONCE R (without anyone knowing k)
     ════════════════════════════════════════════════════════════════════
 
-    Party 1              Party 2              Party 3              Coordinator
-    ────────             ────────             ────────             ───────────
-    picks γ₁             picks γ₂             picks γ₃             picks k
-    (random)             (random)             (random)             (random nonce)
-        │                    │                    │                      │
-        │ γ₁ × G             │ γ₂ × G             │ γ₃ × G              │
-        ▼                    ▼                    ▼                      │
-       Γ₁                   Γ₂                   Γ₃                     │
-        │                    │                    │                      │
-        └──────────┬─────────┘                    │                      │
-                   │                              │                      │
-        ┌──────────▼──────────────────────────────▼───────┐             │
-        │  CONTRACT: Γ = Γ₁ + Γ₂ + Γ₃                    │             │
-        └──────────┬──────────────────────────────────────┘             │
-                   │                                                    │
-                   │                                δ = k − (γ₁+γ₂+γ₃) │
-                   │                                (correction factor) │
-                   │                                        │           │
-                   │                         commit hash(δ) │           │
-                   │                         reveal δ       │           │
-                   │                                        ▼           │
-        ┌──────────▼────────────────────────────────────────────────────┘
-        │  CONTRACT computes:
-        │     R = Γ + δ × G
-        │       = (Γ₁+Γ₂+Γ₃) + (k − γ₁ − γ₂ − γ₃) × G
-        │       = γ₁×G + γ₂×G + γ₃×G + k×G − γ₁×G − γ₂×G − γ₃×G
-        │       = k × G                    ← the gammas cancel out!
-        │
-        │     r = R.x mod n                ← x-coordinate of R
+    Party 1              Party 2              Party 3
+    ────────             ────────             ────────
+    picks k₁, γ₁        picks k₂, γ₂        picks k₃, γ₃
+    (random each)        (random each)        (random each)
+        │                    │                    │
+        │ γ₁ × G             │ γ₂ × G             │ γ₃ × G
+        ▼                    ▼                    ▼
+       Γ₁                   Γ₂                   Γ₃
+        │                    │                    │
+        │    ┌───── MtA ROUNDS (Paillier encrypted) ─────┐
+        │    │ For each pair (i,j): compute shares of     │
+        │    │   kᵢ×γⱼ → αᵢⱼ + βᵢⱼ                      │
+        │    │   kᵢ×sⱼ → μᵢⱼ + νᵢⱼ                      │
+        │    │ 12 exchanges total (3 pairs × 2 products)  │
+        │    └────────────────────────────────────────────┘
+        │                    │                    │
+        │  δ₁ = k₁γ₁+Σ     │  δ₂ = k₂γ₂+Σ     │  δ₃ = k₃γ₃+Σ
+        │  (share of k×γ)   │  (share of k×γ)   │  (share of k×γ)
+        ▼                    ▼                    ▼
+        ┌───────────────────────────────────────────────────────┐
+        │  CONTRACT collects δ₁, δ₂, δ₃ and Γ₁, Γ₂, Γ₃       │
+        │                                                       │
+        │  Computes:                                            │
+        │     δ = δ₁ + δ₂ + δ₃ = k×γ                           │
+        │     Γ = Γ₁ + Γ₂ + Γ₃ = γ×G                           │
+        │     R = δ⁻¹ × Γ                                      │
+        │       = (k×γ)⁻¹ × (γ×G)                              │
+        │       = k⁻¹ × γ⁻¹ × γ × G                            │
+        │       = k⁻¹ × G              ← γ cancels out!        │
+        │                                                       │
+        │     r = R.x mod n             ← x-coordinate of R    │
         └──────────┬───────────────────────────────────────────────────
                    │
     ════════════════════════════════════════════════════════════════════
@@ -293,31 +307,30 @@ The rule "never reuse k" means: don't use the same k for **two different message
 ### Graph 3: Why the Gammas Cancel Out (The Clever Trick)
 
 ```
-    The problem: We need R = k × G, but we don't want any ONE entity to know k.
+    The problem: We need R = k⁻¹ × G, but NOBODY knows k or k⁻¹.
 
-    The solution: Hide k inside a sum that cancels.
+    The solution: Use MtA to compute δ = k×γ without revealing k or γ.
+                  Then R = δ⁻¹ × Γ = (k×γ)⁻¹ × (γ×G) = k⁻¹×G.
 
-                    k  =  γ₁ + γ₂ + γ₃ + δ
-                          ─────────────────
-                          │               │
-                          ▼               ▼
-                    Parties know      Coordinator
-                    their own γᵢ      knows δ
-                    but NOT k         but NOT all γᵢ
+                    k = k₁ + k₂ + k₃       (nobody knows the sum)
+                    γ = γ₁ + γ₂ + γ₃       (nobody knows the sum)
+                         │         │
+                         ▼         ▼
+                    MtA computes shares of k×γ
+                    without revealing k or γ
 
-    On the curve:
+    The math:
 
-        R = k × G
-          = (γ₁ + γ₂ + γ₃ + δ) × G          ← expand k
-          = γ₁×G + γ₂×G + γ₃×G + δ×G        ← distribute multiplication
-          = Γ₁   + Γ₂   + Γ₃   + δ×G        ← these are all public!
-          = Γ                   + δ×G        ← Γ is the sum of gamma points
+        δ = k × γ              ← computed via MtA, safe to reveal
+        Γ = γ × G              ← computed from public Γᵢ points
 
-    So the contract can compute R from public values only:
-        R = Γ + δ × G
+        R = δ⁻¹ × Γ
+          = (k×γ)⁻¹ × (γ×G)   ← substitute
+          = k⁻¹ × γ⁻¹ × γ × G ← inverse distributes
+          = k⁻¹ × G            ← γ cancels out!
 
-    Nobody needs to know k to compute R!
-    (The coordinator knew k to compute δ, but deleted k afterward)
+    Nobody computed k, k⁻¹, or γ as full values.
+    Only additive shares (from MtA) were ever known by any party.
 ```
 
 ### Graph 4: The "Ghost Key" — Why s Never Needs to Exist
@@ -563,12 +576,12 @@ Generate full private key  →  Split into shares  →  Store shares  →  Recon
 │                    GG20 THRESHOLD SIGNING                                │
 │              Private key is NEVER reconstructed                         │
 │                                                                         │
-│   Coordinator generates nonce k, gives each party k⁻¹                  │
-│   Each party computes partial signature with their s_i:                 │
+│   Each party picks kᵢ, γᵢ independently (NO coordinator)                │
+│   MtA protocol (Paillier) computes shares of k×γ and k×s               │
+│   Contract computes R = δ⁻¹ × Γ = k⁻¹×G (nobody knows k⁻¹)            │
 │                                                                         │
-│      σᵢ = k⁻¹ × (msgHash + r × sᵢ) mod n                              │
-│                                                                         │
-│   Contract combines: σ = σ₁ + σ₂ + σ₃ mod n                            │
+│   Each party computes: sᵢ = m×kᵢ + r×σᵢ  (using only their shares)     │
+│   Contract combines: s = s₁ + s₂ + s₃ mod n                            │
 │   Final signature (r, σ) is valid ECDSA — verified on-chain!            │
 │                                                                         │
 │   No party ever sees s = s₁ + s₂ + s₃                                  │
@@ -703,47 +716,47 @@ Then:
 σ = σ₁ + σ₂ + σ₃ mod n     ← this gives the correct full signature!
 ```
 
-### Nonce Generation (Computing R Without Revealing k)
+### Nonce Generation — Fully Distributed (No Coordinator)
 
-The nonce `k` must be random and secret. In our current implementation:
+The nonce `k` must be random and secret. In our implementation, **nobody ever knows k**:
 
-1. **Coordinator** generates random `k`
-2. Computes `R = k × G` and `r = R.x mod n`
-3. Computes `k⁻¹ = k⁻¹ mod n` (modular inverse)
-4. Distributes `k⁻¹` to all parties
-5. **Deletes `k`** — only `k⁻¹` remains
+1. Each party picks random `kᵢ` (using HMAC-DRBG seeded with their secret sᵢ)
+2. Each party picks random `γᵢ` (masking value)
+3. **MtA rounds** (Paillier encryption): for every pair (i,j), compute additive shares of `kᵢ × γⱼ` and `kᵢ × sⱼ` without revealing either secret
+4. Each party computes `δᵢ = kᵢ×γᵢ + Σ(MtA cross-terms)` — their share of `k×γ`
+5. Each party computes `σᵢ = kᵢ×sᵢ + Σ(MtA cross-terms)` — their share of `k×s`
+6. Contract computes `R = δ⁻¹ × Γ = (k×γ)⁻¹ × (γ×G) = k⁻¹×G`
 
-Each party gets `k⁻¹` but cannot recover `k` (computing discrete log is infeasible).
+Nobody computed k, k⁻¹, or k×s. Only additive shares exist.
 
 ### The Complete Signing Flow
 
 ```
-Step 1: gg20_start_signing(key_id, message_hash)
-        → Contract records message hash, enters ThresholdSigning phase
+Step 1: gg20_start_signing(key_id, task_id, num_parties)
+        → Contract prepares for signing session
 
-Step 2: Each party picks random γᵢ, computes Γᵢ = γᵢ × G
+Step 2: OFF-CHAIN — Each party generates kᵢ, γᵢ independently
+        MtA rounds between all pairs (12 Paillier exchanges for 3 parties)
+        Each party now has δᵢ (share of k×γ) and σᵢ (share of k×s)
+
+Step 3: Each party submits δᵢ and Γᵢ = γᵢ × G to contract
+        → submit_delta(key_id, party_index, δᵢ)
         → submit_gamma_point(key_id, party_index, Γᵢ)
-        → Contract collects all Γᵢ points
 
-Step 3: Coordinator generates k, computes δ = k - (γ₁ + γ₂ + γ₃)
-        → Commits SHA-256(δ) on-chain: nonce_commit(key_id, party_index, hash(δ))
-        → Reveals δ on-chain: nonce_reveal(key_id, party_index, δ)
-        → This ensures nobody tampers with δ after the fact
-
-Step 4: Contract computes:
-        Γ = Γ₁ + Γ₂ + Γ₃        (sum of gamma points)
-        R = Γ + δ × G            (R = k × G, since δ = k - Σγᵢ)
-        r = R.x mod n            (x-coordinate)
-        k⁻¹ = computed from k
+Step 4: Contract computes R on-chain (gg20_finalize_r):
+        δ = δ₁ + δ₂ + δ₃          (sum of delta shares = k×γ)
+        Γ = Γ₁ + Γ₂ + Γ₃          (sum of gamma points = γ×G)
+        R = δ⁻¹ × Γ               (= (k×γ)⁻¹ × (γ×G) = k⁻¹×G)
+        r = R.x mod n              (x-coordinate — part of signature)
 
 Step 5: Each party computes partial signature:
-        σᵢ = k⁻¹ × (z/3 + r × sᵢ) mod n
-        → submit_partial_sig(key_id, party_index, σᵢ)
+        sᵢ = m × kᵢ + r × σᵢ  mod n
+        → commit_partial_sig(hash(sᵢ)), then submit_partial_sig(sᵢ)
 
 Step 6: Contract combines:
-        σ = σ₁ + σ₂ + σ₃ mod n
-        Applies low-s normalization (EIP-2): if σ > n/2, set σ = n - σ
-        Verifies (r, σ) against stored public key P
+        s = s₁ + s₂ + s₃ mod n   (= m×k + r×k×x = k×(m + r×x))
+        Applies low-s normalization (EIP-2): if s > n/2, set s = n - s
+        Verifies (r, s) against stored public key P
         Stores verified signature on-chain ✓
 ```
 
@@ -802,7 +815,7 @@ Result:
   α - β = k₁ × s₂   ← the cross-term, additively shared!
 ```
 
-Our current implementation simplifies this: the coordinator has `k` and distributes `k⁻¹` directly. For production, the MtA protocol would distribute nonce generation across all parties.
+Our implementation uses the full MtA protocol: each party picks kᵢ independently, Paillier encryption computes the cross-terms, and nobody ever knows the full k or k⁻¹.
 
 ---
 
@@ -961,8 +974,9 @@ KoshSignerUsingPartisiaZK/
 ├── client/
 │   └── src/
 │       ├── dkg-party.ts            ← DKG client: generate shares, build commit/reveal args
-│       ├── gg20-signing.ts         ← GG20: gamma points, partial sigs, Paillier math
-│       ├── threshold-ecdsa.ts      ← Nonce generation, delta commitment, k⁻¹ distribution
+│       ├── gg20-signing.ts         ← GG20 protocol: init, MtA rounds, R computation, partials
+│       ├── paillier.ts             ← Paillier cryptosystem (1024-bit safe primes, homomorphic ops)
+│       ├── mta.ts                  ← MtA protocol (Paillier-based multiplicative-to-additive)
 │       ├── test-gg20-sign.ts       ← Full end-to-end DKG + GG20 test (24 transactions)
 │       ├── shamir-ts.ts            ← Shamir math (TypeScript)
 │       ├── zk-signer.ts            ← ZK node encryption
@@ -1059,18 +1073,21 @@ Sepolia:
 | **Signature malleability** | Manual low-s | **Auto low-s** | Contract normalizes σ before storing |
 | **Man-in-the-middle** | Possible | **Prevented** | Delta commit-reveal prevents tampering |
 
-### Trust Model (Current Implementation)
+### Trust Model (Current Implementation — Fully Distributed)
 
-The coordinator generates the nonce `k` and distributes `k⁻¹`. This means:
-- The coordinator briefly knows `k` (can compute the private key if it also has all `sᵢ`)
-- For production: replace with Paillier-based MtA where `k = k₁ + k₂ + k₃` and no party knows full `k`
+No coordinator. Each party generates their own kᵢ using HMAC-DRBG seeded with their secret sᵢ. The Paillier MtA protocol computes cross-terms without revealing secrets. Nobody ever knows k, k⁻¹, or the full private key.
 
-### What Would Be Needed for Full Trustlessness
+**Current assumptions:**
+- Paillier key holders don't collude with threshold parties
+- Majority of parties are honest
+- secp256k1 discrete log is hard
 
-1. **Paillier MtA**: Each party picks `kᵢ`, uses homomorphic encryption to compute cross-terms
-2. **Range proofs**: Prove `kᵢ` and `γᵢ` are in valid range without revealing them
-3. **Feldman VSS**: Verifiable secret sharing so parties can verify each other's shares
-4. **Abort identification**: Identify and exclude malicious parties
+### What Could Be Added for Even Stronger Security
+
+1. **Range proofs**: Prove `kᵢ` and `γᵢ` are in valid range without revealing them (prevents overflow attacks)
+2. **Feldman VSS**: Verifiable secret sharing so parties can verify each other's DKG shares
+3. **Abort identification**: Identify and exclude malicious parties who submit bad values
+4. **2048-bit Paillier**: Upgrade from 1024-bit to 2048-bit primes for stronger encryption
 
 ---
 
