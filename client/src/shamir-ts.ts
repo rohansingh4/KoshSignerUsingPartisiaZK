@@ -56,6 +56,14 @@ export function bytesToBigint(bytes: Uint8Array): bigint {
   return result;
 }
 
+/**
+ * Generate a deterministic scalar from raw bytes (e.g. biometric-derived seed).
+ * Reduces bytes mod N to produce a valid secp256k1 scalar.
+ */
+export function deterministicScalarFromBytes(bytes: Uint8Array): bigint {
+  return mod(bytesToBigint(bytes) + 1n, N);
+}
+
 /** Generate a random scalar in [1, N-1] using crypto.getRandomValues. */
 export function randomScalar(): bigint {
   const bytes = new Uint8Array(32);

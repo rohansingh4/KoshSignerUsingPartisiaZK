@@ -51,6 +51,7 @@ import {
 } from "./gg20-signing.js";
 import { paillierKeygen } from "./paillier.js";
 import { bigintTo32Bytes } from "./shamir-ts.js";
+import { derivePartySeeds } from "./biometric-auth.js";
 import {
   keccak256,
   serializeTransaction,
@@ -162,12 +163,24 @@ async function main() {
   // Phase 1: DKG (same as before — key born split)
   // =======================================================================
   console.log("--- Phase 1: DKG Key Generation ---");
+  const biometricSeedHex = process.env.BIOMETRIC_SEED;
   const parties: DkgShare[] = [];
-  for (let i = 0; i < numParties; i++) {
-    const seed = `${DKG_SEED}-key${keyId}-party${i + 1}`;
-    const share = await generateDkgShare(seed);
-    parties.push(share);
-    console.log(`  Party ${i + 1}: P_i = ${toHex(share.publicKeyShare).slice(0, 20)}...`);
+  if (biometricSeedHex) {
+    console.log("  Using BIOMETRIC_SEED for deterministic key derivation");
+    const seedBytes = Buffer.from(biometricSeedHex, "hex");
+    const partySeeds = derivePartySeeds(seedBytes, numParties);
+    for (let i = 0; i < numParties; i++) {
+      const share = await generateDkgShare(partySeeds[i]);
+      parties.push(share);
+      console.log(`  Party ${i + 1}: P_i = ${toHex(share.publicKeyShare).slice(0, 20)}...`);
+    }
+  } else {
+    for (let i = 0; i < numParties; i++) {
+      const seed = `${DKG_SEED}-key${keyId}-party${i + 1}`;
+      const share = await generateDkgShare(seed);
+      parties.push(share);
+      console.log(`  Party ${i + 1}: P_i = ${toHex(share.publicKeyShare).slice(0, 20)}...`);
+    }
   }
 
   const combinedPk = computeCombinedPublicKey(parties.map((p) => p.publicKeyShare));

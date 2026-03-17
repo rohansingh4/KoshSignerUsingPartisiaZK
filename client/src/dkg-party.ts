@@ -12,7 +12,7 @@
  */
 
 import { secp256k1 } from "@noble/curves/secp256k1";
-import { randomScalar, deterministicScalar, bigintTo32Bytes, scalarToHalves } from "./shamir-ts.js";
+import { randomScalar, deterministicScalar, deterministicScalarFromBytes, bigintTo32Bytes, scalarToHalves } from "./shamir-ts.js";
 
 // --- Types ---
 
@@ -36,8 +36,13 @@ export interface DkgShare {
  * The public key share is P_i = s_i × G (compressed, 33 bytes).
  * The commitment hash is SHA-256(P_i).
  */
-export async function generateDkgShare(seed?: string): Promise<DkgShare> {
-  const secretScalar = seed ? await deterministicScalar(seed) : randomScalar();
+export async function generateDkgShare(seed?: Uint8Array | string): Promise<DkgShare> {
+  const secretScalar =
+    seed instanceof Uint8Array
+      ? deterministicScalarFromBytes(seed)
+      : seed
+        ? await deterministicScalar(seed)
+        : randomScalar();
   const publicPoint = secp256k1.ProjectivePoint.BASE.multiply(secretScalar);
   const publicKeyShare = publicPoint.toRawBytes(true); // 33 bytes compressed
 

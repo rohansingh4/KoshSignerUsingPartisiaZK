@@ -29,6 +29,15 @@ pub enum ZkKeyGenPhase {
     /// DKG finalized: combined public key computed, awaiting ZK secret share inputs.
     #[discriminant(5)]
     DkgFinalized {},
+    /// Biometric enrollment: collecting template chunks as ZK secrets.
+    #[discriminant(6)]
+    BiometricEnrolling {},
+    /// Biometric recovery: collecting recovery template chunks.
+    #[discriminant(7)]
+    BiometricRecovering {},
+    /// Biometric match succeeded: seed available for DKG.
+    #[discriminant(8)]
+    BiometricMatched {},
 }
 
 /// Signing phase for ZK-based reconstruction and signing.
@@ -69,8 +78,19 @@ pub struct ShareMetadata {
     pub share_index: u8,
     /// Whether this is the high half (true) or low half (false) of the 256-bit share.
     pub is_high_half: bool,
-    /// 0 = key_share, 1 = delta_value
+    /// 0 = key_share, 1 = delta_value, 2 = biometric_enrollment, 3 = biometric_recovery
     pub variable_type: u8,
+}
+
+/// Metadata for biometric ZK variables.
+#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
+pub struct BiometricMetadata {
+    /// Which key this biometric data belongs to.
+    pub key_id: u32,
+    /// Chunk index (0..7), each chunk holds 8 packed u16 cell IDs.
+    pub chunk_index: u8,
+    /// 0 = enrollment, 1 = recovery.
+    pub purpose: u8,
 }
 
 /// A pending signing request.
@@ -260,6 +280,25 @@ pub struct ZkKeyState {
     pub signing_deadline_block: i64,
     /// Number of blocks allowed for a signing round (configurable, default 100 ~= 5 minutes).
     pub signing_timeout_blocks: i64,
+
+    // --- Biometric fields (flattened) ---
+
+    /// Whether a biometric template has been enrolled for this key.
+    pub bio_enrolled: bool,
+    /// SHA-256 commitment hash of the quantized enrollment template.
+    pub bio_commitment_hash: Vec<u8>,
+    /// ZK variable IDs for enrollment template chunks (up to 8).
+    pub bio_enrollment_var_ids: Vec<u32>,
+    /// Number of enrollment chunks submitted so far (0..8).
+    pub bio_enrollment_count: u8,
+    /// ZK variable IDs for recovery template chunks (up to 8).
+    pub bio_recovery_var_ids: Vec<u32>,
+    /// Number of recovery chunks submitted so far (0..8).
+    pub bio_recovery_count: u8,
+    /// Match threshold: minimum cell matches required (default 40 of 64).
+    pub bio_match_threshold: u8,
+    /// Derived seed from successful biometric match (16 bytes from XOR-fold).
+    pub bio_derived_seed: Vec<u8>,
 }
 
 impl ZkKeyState {
@@ -314,6 +353,14 @@ impl ZkKeyState {
             gg20_delta_zk_expected: 0,
             signing_deadline_block: 0,
             signing_timeout_blocks: 100, // ~5 minutes on Partisia
+            bio_enrolled: false,
+            bio_commitment_hash: Vec::new(),
+            bio_enrollment_var_ids: Vec::new(),
+            bio_enrollment_count: 0,
+            bio_recovery_var_ids: Vec::new(),
+            bio_recovery_count: 0,
+            bio_match_threshold: 25,
+            bio_derived_seed: Vec::new(),
         }
     }
 

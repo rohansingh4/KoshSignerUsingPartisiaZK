@@ -77,11 +77,16 @@ export class PartisiaClient {
 
   /** Read the full contract data (serializedContract) as JSON. */
   async getContractData(contractAddress: string): Promise<Record<string, unknown>> {
-    const url = `${this.nodeUrl}/shards/Shard0/blockchain/contracts/${contractAddress}?requireContractState=true`;
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`Failed to read state: ${resp.status}`);
-    const data = await resp.json();
-    return data.serializedContract ?? data;
+    // Try all shards since contracts can land on any shard
+    for (const shard of ["Shard0", "Shard1", "Shard2"]) {
+      const url = `${this.nodeUrl}/shards/${shard}/blockchain/contracts/${contractAddress}?requireContractState=true`;
+      const resp = await fetch(url);
+      if (resp.ok) {
+        const data = await resp.json();
+        return data.serializedContract ?? data;
+      }
+    }
+    throw new Error(`Failed to read state from any shard for ${contractAddress}`);
   }
 
   /**

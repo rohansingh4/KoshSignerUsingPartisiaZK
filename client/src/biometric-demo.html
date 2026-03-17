@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kosh ZK Signer — Biometric Wallet</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, system-ui, sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .container { max-width: 480px; width: 100%; padding: 2rem; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+    .subtitle { color: #888; margin-bottom: 2rem; font-size: 0.9rem; }
+    .card { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
+    .card h2 { font-size: 1rem; margin-bottom: 0.75rem; }
+    button { background: #2563eb; color: white; border: none; border-radius: 8px; padding: 0.75rem 1.5rem; font-size: 0.95rem; cursor: pointer; width: 100%; margin-top: 0.5rem; transition: background 0.2s; }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #333; color: #666; cursor: not-allowed; }
+    .result { margin-top: 0.75rem; padding: 0.75rem; background: #111; border-radius: 8px; font-family: monospace; font-size: 0.8rem; word-break: break-all; display: none; }
+    .result.show { display: block; }
+    .result.error { border: 1px solid #dc2626; color: #f87171; }
+    .result.success { border: 1px solid #16a34a; color: #4ade80; }
+    .status { color: #888; font-size: 0.85rem; margin-top: 0.5rem; }
+    .match { color: #4ade80; font-weight: bold; }
+    .mismatch { color: #f87171; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Kosh ZK Signer</h1>
+    <p class="subtitle">Your fingerprint = your wallet</p>
+
+    <!-- Step 1: Register -->
+    <div class="card">
+      <h2>1. Register Passkey</h2>
+      <p class="status">Create a passkey protected by your fingerprint</p>
+      <button id="btn-register" onclick="register()">Register with Biometric</button>
+      <div id="result-register" class="result"></div>
+    </div>
+
+    <!-- Step 2: Derive -->
+    <div class="card">
+      <h2>2. Derive Wallet</h2>
+      <p class="status">Authenticate to derive your Ethereum address</p>
+      <button id="btn-derive" onclick="derive()" disabled>Derive Wallet Address</button>
+      <div id="result-derive" class="result"></div>
+    </div>
+
+    <!-- Step 3: Verify -->
+    <div class="card">
+      <h2>3. Verify (Re-derive)</h2>
+      <p class="status">Authenticate again — should produce the same address</p>
+      <button id="btn-verify" onclick="verify()" disabled>Verify Same Address</button>
+      <div id="result-verify" class="result"></div>
+    </div>
+  </div>
+
+<script type="module">
+  // Inline minimal secp256k1 point multiplication would require a library.
+  // For the demo, we derive the secret and show the hex seed + party seeds.
+  // Full Ethereum address derivation requires @noble/curves (use with a bundler).
+
+  const PRF_SALT = new TextEncoder().encode("kosh-zk-signer-v1");
+  let credentialId = null;
+  let firstAddress = null;
+
+  // Try to restore credentialId from localStorage
+  const stored = localStorage.getItem("kosh-credential-id");
+  if (stored) {
+    credentialId = Uint8Array.from(JSON.parse(stored));
+    document.getElementById("btn-derive").disabled = false;
+    showResult("result-register", "success", "Passkey found in storage. Ready to derive.");
+  }
+
+  function showResult(id, type, msg) {
+    const el = document.getElementById(id);
+    el.className = `result show ${type}`;
+    el.textContent = msg;
+  }
+
+  function toHex(bytes) {
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  // HKDF-SHA256 (extract + expand) using Web Crypto
+  async function hkdfDerive(ikm, salt, info, length) {
+    const key = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+    const bits = await crypto.subtle.deriveBits(
+      { name: "HKDF", hash: "SHA-256", salt: salt, info: new TextEncoder().encode(info) },
+      key, length * 8
+    );
+    return new Uint8Array(bits);
+  }
+
+  // Derive party seeds from a single secret
+  async function derivePartySeeds(secret, numParties) {
+    const seeds = [];
+    for (let i = 0; i < numParties; i++) {
+      const seed = await hkdfDerive(secret, PRF_SALT, `kosh-party-${i + 1}`, 32);
+      seeds.push(seed);
+    }
+    return seeds;
+  }
+
+  // Compute Ethereum address from secret seed using secp256k1
+  // Uses SubtleCrypto P-256 as a placeholder display — for real address, need secp256k1
+  async function deriveEthAddressPreview(secret) {
+    const seeds = await derivePartySeeds(secret, 3);
+    // Hash all seeds together to produce a deterministic "address" preview
+    const combined = new Uint8Array(96);
+    combined.set(seeds[0], 0);
+    combined.set(seeds[1], 32);
+    combined.set(seeds[2], 64);
+    const hash = await crypto.subtle.digest("SHA-256", combined);
+    const hashBytes = new Uint8Array(hash);
+    // Take last 20 bytes as pseudo-address (for demo display)
+    const addr = hashBytes.slice(12, 32);
+    return "0x" + toHex(addr);
+  }
+
+  window.register = async function() {
+    try {
+      const userId = `kosh-user-${Date.now()}`;
+      const userIdBytes = new TextEncoder().encode(userId);
+
+      const credential = await navigator.credentials.create({
+        publicKey: {
+          rp: { name: "Kosh ZK Signer" },
+          user: { id: userIdBytes, name: userId, displayName: "Kosh Wallet User" },
+          challenge: crypto.getRandomValues(new Uint8Array(32)),
+          pubKeyCredParams: [
+            { alg: -7, type: "public-key" },
+            { alg: -257, type: "public-key" },
+          ],
+          authenticatorSelection: {
+            authenticatorAttachment: "platform",
+            userVerification: "required",
+            residentKey: "required",
+          },
+          extensions: { prf: {} },
+        },
+      });
+
+      if (!credential) {
+        showResult("result-register", "error", "Registration cancelled.");
+        return;
+      }
+
+      const prfResult = credential.getClientExtensionResults()?.prf;
+      if (!prfResult?.enabled) {
+        showResult("result-register", "error",
+          "PRF not supported. Need iOS 17+, Android 14+, or macOS Sonoma+.");
+        return;
+      }
+
+      credentialId = new Uint8Array(credential.rawId);
+      localStorage.setItem("kosh-credential-id", JSON.stringify(Array.from(credentialId)));
+
+      showResult("result-register", "success",
+        `Passkey registered!\nCredential ID: ${toHex(credentialId).slice(0, 32)}...`);
+      document.getElementById("btn-derive").disabled = false;
+    } catch (e) {
+      showResult("result-register", "error", `Error: ${e.message}`);
+    }
+  };
+
+  async function getPrfSecret() {
+    const saltBytes = new TextEncoder().encode("kosh-zk-signer-v1");
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        allowCredentials: [{ id: credentialId, type: "public-key", transports: ["internal"] }],
+        userVerification: "required",
+        extensions: { prf: { eval: { first: saltBytes } } },
+      },
+    });
+
+    if (!assertion) throw new Error("Authentication cancelled");
+
+    const prfResult = assertion.getClientExtensionResults()?.prf?.results;
+    if (!prfResult?.first) throw new Error("PRF evaluation failed");
+
+    return new Uint8Array(prfResult.first);
+  }
+
+  window.derive = async function() {
+    try {
+      const secret = await getPrfSecret();
+      const address = await deriveEthAddressPreview(secret);
+      firstAddress = address;
+
+      const seeds = await derivePartySeeds(secret, 3);
+      showResult("result-derive", "success",
+        `Biometric secret: ${toHex(secret).slice(0, 32)}...\n` +
+        `Party seed 1: ${toHex(seeds[0]).slice(0, 32)}...\n` +
+        `Party seed 2: ${toHex(seeds[1]).slice(0, 32)}...\n` +
+        `Party seed 3: ${toHex(seeds[2]).slice(0, 32)}...\n` +
+        `\nDerived address: ${address}\n` +
+        `(Preview — full secp256k1 address requires @noble/curves)`);
+      document.getElementById("btn-verify").disabled = false;
+    } catch (e) {
+      showResult("result-derive", "error", `Error: ${e.message}`);
+    }
+  };
+
+  window.verify = async function() {
+    try {
+      const secret = await getPrfSecret();
+      const address = await deriveEthAddressPreview(secret);
+      const match = address === firstAddress;
+
+      showResult("result-verify", match ? "success" : "error",
+        `Re-derived address: ${address}\n` +
+        `Original address:   ${firstAddress}\n` +
+        `Match: ${match ? "YES — same finger, same wallet!" : "NO — different derivation!"}`);
+    } catch (e) {
+      showResult("result-verify", "error", `Error: ${e.message}`);
+    }
+  };
+</script>
+</body>
+</html>

@@ -97,7 +97,7 @@ async function main() {
   const builder = new DeploymentBuilder(deployClient);
   builder.pbcFile(pbcBytes);
   builder.initRpc(initRpc);
-  builder.gasCost(10_000_000);
+  builder.gasCost(50_000_000);
 
   console.log("\nDeploying...");
   const result = await builder.deploy();
@@ -109,5 +109,9 @@ async function main() {
 
 main().catch((err) => {
   console.error("Deploy failed:", err);
+  if (err.cause) console.error("Cause:", err.cause);
+  if (err.response) {
+    err.response.text?.().then?.((t: string) => console.error("Response:", t));
+  }
   process.exit(1);
 });
