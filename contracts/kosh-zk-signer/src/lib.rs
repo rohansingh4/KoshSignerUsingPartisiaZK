@@ -325,6 +325,7 @@ pub fn submit_key_share(
         key_id,
         share_index,
         is_high_half,
+        variable_type: 0, // key_share
     };
 
     let input_def = ZkInputDef::with_metadata(None, metadata);
@@ -351,20 +352,31 @@ pub fn on_share_inputted(
         .get(&metadata.key_id)
         .expect("Key not found for inputted share");
 
-    // Track this variable
-    key_state.share_variables.push(StoredShareVar {
-        variable_id: inputted_variable.raw_id,
-        key_id: metadata.key_id,
-        share_index: metadata.share_index,
-        is_high_half: metadata.is_high_half,
-    });
-    key_state.shares_submitted += 1;
+    if metadata.variable_type == 1 {
+        // Delta ZK variable
+        key_state.gg20_delta_zk_vars.push(StoredShareVar {
+            variable_id: inputted_variable.raw_id,
+            key_id: metadata.key_id,
+            share_index: metadata.share_index,
+            is_high_half: metadata.is_high_half,
+        });
+        key_state.gg20_delta_zk_count += 1;
+    } else {
+        // Key share variable (existing behavior)
+        key_state.share_variables.push(StoredShareVar {
+            variable_id: inputted_variable.raw_id,
+            key_id: metadata.key_id,
+            share_index: metadata.share_index,
+            is_high_half: metadata.is_high_half,
+        });
+        key_state.shares_submitted += 1;
 
-    // Check if all share halves are stored AND public key is posted
-    if key_state.shares_submitted >= key_state.expected_share_count
-        && key_state.public_key.is_some()
-    {
-        key_state.keygen_phase = ZkKeyGenPhase::Complete {};
+        // Check if all share halves are stored AND public key is posted
+        if key_state.shares_submitted >= key_state.expected_share_count
+            && key_state.public_key.is_some()
+        {
+            key_state.keygen_phase = ZkKeyGenPhase::Complete {};
+        }
     }
 
     state.keys.insert(metadata.key_id, key_state);
@@ -437,6 +449,7 @@ pub fn on_shares_opened(
         .get_variable(opened_variables[0])
         .expect("Opened variable not found");
     let key_id = first_var.metadata.key_id;
+    let first_variable_type = first_var.metadata.variable_type;
 
     let mut key_state = state.keys.get(&key_id).expect("Key not found");
 
@@ -462,37 +475,78 @@ pub fn on_shares_opened(
         ));
     }
 
-    // Assemble full shares from high/low pairs
-    let mut assembled: AvlTreeMap<u8, OpenedShare> = AvlTreeMap::new();
-    for (share_index, is_high_half, data) in share_halves {
-        let mut share = assembled.get(&share_index).unwrap_or_else(|| OpenedShare {
-            share_index,
-            high_bytes: vec![0u8; 16],
-            low_bytes: vec![0u8; 16],
-        });
+    if first_variable_type == 1 {
+        // --- Delta ZK variables opened ---
+        // Assemble 256-bit delta values from high/low halves
+        let mut assembled: AvlTreeMap<u8, OpenedShare> = AvlTreeMap::new();
+        for (share_index, is_high_half, data) in share_halves {
+            let mut share = assembled.get(&share_index).unwrap_or_else(|| OpenedShare {
+                share_index,
+                high_bytes: vec![0u8; 16],
+                low_bytes: vec![0u8; 16],
+            });
 
-        if is_high_half {
-            share.high_bytes = data;
-        } else {
-            share.low_bytes = data;
+            if is_high_half {
+                share.high_bytes = data;
+            } else {
+                share.low_bytes = data;
+            }
+            assembled.insert(share_index, share);
         }
-        assembled.insert(share_index, share);
-    }
 
-    // Collect assembled shares
-    key_state.opened_shares.clear();
-    let share_indices: Vec<u8> = (1..=key_state.num_shares)
-        .filter(|i| assembled.get(i).is_some())
-        .collect();
-    for idx in share_indices {
-        if let Some(share) = assembled.get(&idx) {
-            key_state.opened_shares.push(share);
+        // Reconstruct 32-byte delta values and store in gg20_delta_indices/values
+        for party_idx in 1..=key_state.gg20_num_parties {
+            if let Some(share) = assembled.get(&party_idx) {
+                // Combine high + low into 32-byte delta
+                let mut delta_bytes = Vec::with_capacity(32);
+                delta_bytes.extend_from_slice(&share.high_bytes);
+                delta_bytes.extend_from_slice(&share.low_bytes);
+
+                // Only add if not already present (from plaintext path)
+                if !key_state.gg20_delta_indices.iter().any(|&idx| idx == party_idx) {
+                    key_state.gg20_delta_indices.push(party_idx);
+                    key_state.gg20_delta_values.push(delta_bytes);
+                }
+            }
         }
-    }
 
-    // Move to Signing phase
-    if let ZkSigningPhase::ReconstructingKey { task_id } = key_state.signing_phase {
-        key_state.signing_phase = ZkSigningPhase::Signing { task_id };
+        // Clear ZK delta tracking
+        key_state.gg20_delta_zk_vars.clear();
+        key_state.gg20_delta_zk_count = 0;
+    } else {
+        // --- Key share variables opened (existing behavior) ---
+        // Assemble full shares from high/low pairs
+        let mut assembled: AvlTreeMap<u8, OpenedShare> = AvlTreeMap::new();
+        for (share_index, is_high_half, data) in share_halves {
+            let mut share = assembled.get(&share_index).unwrap_or_else(|| OpenedShare {
+                share_index,
+                high_bytes: vec![0u8; 16],
+                low_bytes: vec![0u8; 16],
+            });
+
+            if is_high_half {
+                share.high_bytes = data;
+            } else {
+                share.low_bytes = data;
+            }
+            assembled.insert(share_index, share);
+        }
+
+        // Collect assembled shares
+        key_state.opened_shares.clear();
+        let share_indices: Vec<u8> = (1..=key_state.num_shares)
+            .filter(|i| assembled.get(i).is_some())
+            .collect();
+        for idx in share_indices {
+            if let Some(share) = assembled.get(&idx) {
+                key_state.opened_shares.push(share);
+            }
+        }
+
+        // Move to Signing phase
+        if let ZkSigningPhase::ReconstructingKey { task_id } = key_state.signing_phase {
+            key_state.signing_phase = ZkSigningPhase::Signing { task_id };
+        }
     }
 
     state.keys.insert(key_id, key_state);
@@ -1150,6 +1204,9 @@ pub fn gg20_start_signing(
     key_state.gg20_delta_values.clear();
     key_state.gg20_delta_commit_indices.clear();
     key_state.gg20_delta_commit_hashes.clear();
+    key_state.gg20_delta_zk_vars.clear();
+    key_state.gg20_delta_zk_count = 0;
+    key_state.gg20_delta_zk_expected = 0;
     key_state.gg20_gamma_indices.clear();
     key_state.gg20_gamma_points.clear();
     key_state.gg20_r_bytes.clear();
@@ -1269,6 +1326,74 @@ pub fn submit_gamma_point(
 
     state.keys.insert(key_id, key_state);
     (state, vec![], vec![])
+}
+
+/// Submit δ_i as ZK secret input (encrypted, not visible on-chain).
+/// Delta values are 256-bit scalars, submitted as two Sbi128 halves.
+/// This is the privacy-preserving alternative to plaintext submit_delta (0x45).
+#[zk_on_secret_input(shortname = 0x51)]
+pub fn submit_delta_zk(
+    _ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    party_index: u8,
+    is_high_half: bool,
+) -> (
+    ContractState,
+    Vec<EventGroup>,
+    ZkInputDef<ShareMetadata, Sbi128>,
+) {
+    let key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(key_state.gg20_active, "No GG20 session active");
+
+    // Set expected count if not yet set
+    if key_state.gg20_delta_zk_expected == 0 {
+        let mut ks = key_state;
+        ks.gg20_delta_zk_expected = (ks.gg20_num_parties as u32) * 2;
+        state.keys.insert(key_id, ks);
+    }
+
+    let metadata = ShareMetadata {
+        key_id,
+        share_index: party_index,
+        is_high_half,
+        variable_type: 1, // delta
+    };
+
+    let input_def = ZkInputDef::with_metadata(None, metadata);
+    (state, vec![], input_def)
+}
+
+/// Open all submitted delta ZK variables so the contract can read them.
+/// Called by the client after all delta halves have been submitted via submit_delta_zk.
+/// The opened values are processed in on_shares_opened (variable_type == 1).
+#[action(shortname = 0x52, zk = true)]
+pub fn open_gg20_deltas(
+    _ctx: ContractContext,
+    state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    let key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(key_state.gg20_active, "No GG20 session active");
+
+    // Collect all delta ZK variable IDs
+    let delta_var_ids: Vec<SecretVarId> = key_state
+        .gg20_delta_zk_vars
+        .iter()
+        .map(|sv| SecretVarId::new(sv.variable_id))
+        .collect();
+
+    assert!(!delta_var_ids.is_empty(), "No delta ZK variables to open");
+
+    (
+        state,
+        vec![],
+        vec![ZkStateChange::OpenVariables {
+            variables: delta_var_ids,
+        }],
+    )
 }
 
 /// Finalize GG20 R computation on-chain.
@@ -1407,6 +1532,9 @@ pub fn abort_signing(
     key_state.gg20_delta_values.clear();
     key_state.gg20_delta_commit_indices.clear();
     key_state.gg20_delta_commit_hashes.clear();
+    key_state.gg20_delta_zk_vars.clear();
+    key_state.gg20_delta_zk_count = 0;
+    key_state.gg20_delta_zk_expected = 0;
     key_state.gg20_gamma_indices.clear();
     key_state.gg20_gamma_points.clear();
     key_state.gg20_r_bytes.clear();

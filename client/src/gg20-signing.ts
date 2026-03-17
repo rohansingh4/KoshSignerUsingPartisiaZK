@@ -445,6 +445,23 @@ export function buildAbortSigningArgs(keyId: number): Uint8Array {
 }
 
 /**
+ * Build RPC args for open_gg20_deltas (shortname 0x52).
+ * Args: key_id(u32)
+ */
+export function buildOpenGG20DeltasArgs(keyId: number): Uint8Array {
+  return encodeU32(keyId);
+}
+
+/**
+ * Split a 256-bit delta scalar into high (first 16 bytes) and low (last 16 bytes) halves.
+ */
+export function splitDelta(deltaBytes: Uint8Array): [Uint8Array, Uint8Array] {
+  const high = deltaBytes.slice(0, 16);
+  const low = deltaBytes.slice(16, 32);
+  return [high, low];
+}
+
+/**
  * Build RPC args for submit_partial_sig (shortname 0x31).
  * Args: key_id(u32), party_index(u8), partial_s(Vec<u8>)
  */
