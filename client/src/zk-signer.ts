@@ -113,6 +113,53 @@ export async function submitZkShareHalf(
   return partisia.submitTransaction(tx);
 }
 
+// -- Delta ZK secret input helpers --
+
+/**
+ * Build the additionalRpc buffer for the submit_delta_zk ZK input.
+ * Format: [shortname=0x51, key_id(u32), party_index(u8), is_high_half(bool as u8)]
+ */
+export function buildDeltaAdditionalRpc(
+  keyId: number,
+  partyIndex: number,
+  isHighHalf: boolean
+): Buffer {
+  return Buffer.from([
+    0x51,
+    ...encodeU32BE(keyId),
+    partyIndex,
+    isHighHalf ? 1 : 0,
+  ]);
+}
+
+/**
+ * Submit a single Sbi128 ZK secret input (one delta half) to the contract.
+ *
+ * Uses RealZkClient.buildOnChainInputTransaction() to encrypt the secret
+ * for each ZK engine, then submits via PartisiaClient with proper signing.
+ */
+export async function submitZkDelta(
+  partisia: PartisiaClient,
+  zkClient: RealZkClient,
+  contractAddress: string,
+  keyId: number,
+  partyIndex: number,
+  isHighHalf: boolean,
+  halfBytes: Uint8Array
+): Promise<string> {
+  const secretBits = serializeSbi128(halfBytes);
+  const additionalRpc = buildDeltaAdditionalRpc(keyId, partyIndex, isHighHalf);
+  const senderAddress = partisia.getSenderAddress();
+
+  const tx = await zkClient.buildOnChainInputTransaction(
+    senderAddress,
+    secretBits,
+    additionalRpc
+  );
+
+  return partisia.submitTransaction(tx);
+}
+
 // -- Polling helpers --
 
 /**

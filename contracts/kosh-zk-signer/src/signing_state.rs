@@ -69,6 +69,8 @@ pub struct ShareMetadata {
     pub share_index: u8,
     /// Whether this is the high half (true) or low half (false) of the 256-bit share.
     pub is_high_half: bool,
+    /// 0 = key_share, 1 = delta_value
+    pub variable_type: u8,
 }
 
 /// A pending signing request.
@@ -244,6 +246,13 @@ pub struct ZkKeyState {
     /// GG20: delta commitment hashes (SHA-256 of δ_i bytes, parallel with indices).
     pub gg20_delta_commit_hashes: Vec<Vec<u8>>,
 
+    /// GG20: ZK variable IDs for delta values (similar to share_variables for key shares).
+    pub gg20_delta_zk_vars: Vec<StoredShareVar>,
+    /// GG20: count of delta ZK variables submitted.
+    pub gg20_delta_zk_count: u32,
+    /// GG20: expected delta ZK variables (num_parties * 2 for high/low halves).
+    pub gg20_delta_zk_expected: u32,
+
     // --- Timeout / Abort fields ---
 
     /// Block number by which the current signing round must complete.
@@ -300,6 +309,9 @@ impl ZkKeyState {
             gg20_active: false,
             gg20_delta_commit_indices: Vec::new(),
             gg20_delta_commit_hashes: Vec::new(),
+            gg20_delta_zk_vars: Vec::new(),
+            gg20_delta_zk_count: 0,
+            gg20_delta_zk_expected: 0,
             signing_deadline_block: 0,
             signing_timeout_blocks: 100, // ~5 minutes on Partisia
         }
