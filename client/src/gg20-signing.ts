@@ -30,6 +30,13 @@ import { randomScalar, bigintTo32Bytes, bytesToBigint } from "./shamir-ts.js";
 import { paillierKeygen, type PaillierKeyPair } from "./paillier.js";
 import { runMtA } from "./mta.js";
 import { createHmac } from "crypto";
+import {
+  kyberEncapsulate,
+  kyberDecapsulate,
+  encryptWithSharedSecret,
+  decryptWithSharedSecret,
+  type EncryptedPayload,
+} from "./pqc.js";
 import { mod } from "@noble/curves/abstract/modular";
 
 const N = secp256k1.CURVE.n;
@@ -85,16 +92,24 @@ export interface GG20SignatureData {
  * - It's bound to the specific message being signed
  * - Additional system entropy is mixed in as extra protection
  */
-function deterministicNonce(x_i: bigint, msgHash?: Uint8Array, label?: string): bigint {
+/**
+ * Generate a deterministic nonce using HMAC-DRBG (RFC 6979 inspired).
+ *
+ * Protection 5 (Session Isolation): session_id is mixed into the HMAC
+ * so the same (x_i, msgHash) pair produces DIFFERENT nonces in different
+ * signing sessions. This structurally prevents nonce reuse.
+ */
+function deterministicNonce(x_i: bigint, msgHash?: Uint8Array, label?: string, sessionId?: number): bigint {
   const x_bytes = bigintTo32Bytes(x_i);
   const msg = msgHash ?? new Uint8Array(32);
   const extra = new Uint8Array(32);
   globalThis.crypto.getRandomValues(extra); // additional entropy
 
-  // HMAC-DRBG: K = HMAC(x_i, msg || extra || label)
+  // HMAC-DRBG: K = HMAC(x_i, msg || extra || session_id || label)
   const hmac = createHmac("sha256", Buffer.from(x_bytes));
   hmac.update(Buffer.from(msg));
   hmac.update(Buffer.from(extra));
+  if (sessionId !== undefined) hmac.update(`session_${sessionId}`);
   if (label) hmac.update(label);
   const hash = new Uint8Array(hmac.digest());
 
@@ -112,11 +127,12 @@ export function gg20InitParty(
   partyIndex: number,
   x_i: bigint,
   paillierKeys?: PaillierKeyPair,
-  msgHash?: Uint8Array
+  msgHash?: Uint8Array,
+  sessionId?: number
 ): GG20PartyState {
-  // Use deterministic nonce generation seeded with party's secret
-  const k_i = deterministicNonce(x_i, msgHash, `k_${partyIndex}`);
-  const gamma_i = deterministicNonce(x_i, msgHash, `gamma_${partyIndex}`);
+  // Use deterministic nonce generation seeded with party's secret + session ID
+  const k_i = deterministicNonce(x_i, msgHash, `k_${partyIndex}`, sessionId);
+  const gamma_i = deterministicNonce(x_i, msgHash, `gamma_${partyIndex}`, sessionId);
   const Gamma_point = G.multiply(gamma_i);
   const Gamma_i = Gamma_point.toRawBytes(true);
 
@@ -271,15 +287,22 @@ export function gg20ComputePartials(
  *
  * This simulates all parties in one process (for testing).
  * In production, each party runs on a separate machine.
+ *
+ * For threshold signing (2-of-3):
+ *   Pass only the signing parties (e.g., 2 out of 3).
+ *   Each party's x_i should already be the Lagrange-adjusted share:
+ *     x_i = λ_i · X_i  (where X_i is the Shamir share)
+ *   This ensures Σ x_i = s (the secret) for any subset.
  */
 export function gg20Sign(
   partySecrets: Array<{ partyIndex: number; x_i: bigint }>,
   msgHash: Uint8Array,
-  paillierKeys?: PaillierKeyPair[]
+  paillierKeys?: PaillierKeyPair[],
+  sessionId?: number
 ): GG20SignatureData {
   console.log("  [GG20] Phase 1: Init parties (k_i, γ_i, Γ_i for each)...");
   const parties = partySecrets.map((p, i) =>
-    gg20InitParty(p.partyIndex, p.x_i, paillierKeys?.[i], msgHash)
+    gg20InitParty(p.partyIndex, p.x_i, paillierKeys?.[i], msgHash, sessionId)
   );
 
   console.log("  [GG20] Phase 2: MtA rounds (Paillier-encrypted multiplication)...");
@@ -429,6 +452,24 @@ export function buildSubmitGammaPointArgs(
 }
 
 /**
+ * Build RPC args for gg20_start_signing (shortname 0x50).
+ *
+ * Args: key_id(u32), task_id(u32), signing_parties(Vec<u8>)
+ *
+ * The contract now accepts the full party index list (not just the count)
+ * so it can enforce policy: mandatory_parties ⊆ signing_parties.
+ */
+export function buildGG20StartSigningArgs(
+  keyId: number,
+  taskId: number,
+  signingParties: number[]
+): Uint8Array {
+  if (signingParties.length < 2) throw new Error("Need at least 2 signing parties");
+  const partiesVec = encodeVec(new Uint8Array(signingParties.map(p => p & 0xff)));
+  return new Uint8Array([...encodeU32(keyId), ...encodeU32(taskId), ...partiesVec]);
+}
+
+/**
  * Build RPC args for gg20_finalize_r (shortname 0x47).
  * Args: key_id(u32)
  */
@@ -502,6 +543,53 @@ export async function sha256(data: Uint8Array): Promise<Uint8Array> {
 }
 
 /**
+ * Build RPC args for register_paillier_key (shortname 0x25).
+ * Protection 2: Register Paillier public key on-chain.
+ * Args: key_id(u32), party_index(u8), paillier_n(Vec<u8>), proof_commitment(Vec<u8>)
+ */
+export function buildRegisterPaillierKeyArgs(
+  keyId: number,
+  partyIndex: number,
+  paillierN: Uint8Array,
+  proofCommitment: Uint8Array
+): Uint8Array {
+  return new Uint8Array([
+    ...encodeU32(keyId),
+    partyIndex,
+    ...encodeVec(paillierN),
+    ...encodeVec(proofCommitment),
+  ]);
+}
+
+/**
+ * Build RPC args for initiate_blame (shortname 0x32).
+ * Protection 4: Start blame protocol when combined sig fails verification.
+ * Args: key_id(u32)
+ */
+export function buildInitiateBlameArgs(keyId: number): Uint8Array {
+  return encodeU32(keyId);
+}
+
+/**
+ * Build RPC args for submit_blame_opening (shortname 0x33).
+ * Protection 4: Party reveals k_i and γ_i for cheater identification.
+ * Args: key_id(u32), party_index(u8), k_i(Vec<u8>), gamma_i(Vec<u8>)
+ */
+export function buildSubmitBlameOpeningArgs(
+  keyId: number,
+  partyIndex: number,
+  kI: Uint8Array,
+  gammaI: Uint8Array
+): Uint8Array {
+  return new Uint8Array([
+    ...encodeU32(keyId),
+    partyIndex,
+    ...encodeVec(kI),
+    ...encodeVec(gammaI),
+  ]);
+}
+
+/**
  * Build RPC args for commit_delta (shortname 0x49).
  * Args: key_id(u32), party_index(u8), commitment_hash(Vec<u8>)
  */
@@ -515,4 +603,270 @@ export function buildCommitDeltaArgs(
     partyIndex,
     ...encodeVec(commitmentHash),
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// PQC: Kyber-encrypted k⁻¹ transport
+//
+// When a party needs to submit their nonce inverse (k⁻¹) to a coordinator
+// for ZK-node computation, it must NOT be transmitted in plaintext.
+// A quantum adversary recording traffic today could recover k from k⁻¹
+// after Q-Day, retroactively reconstructing all partial signatures.
+//
+// Solution: Encrypt k⁻¹ with the coordinator's ML-KEM-768 public key.
+// Even a quantum computer cannot break ML-KEM (lattice problem, not ECC).
+// ---------------------------------------------------------------------------
+
+/**
+ * Party side: encrypt k⁻¹ for the coordinator.
+ *
+ * Uses ML-KEM-768 (Kyber) to encapsulate a shared secret, then
+ * AES-256-GCM encrypts the 32-byte k⁻¹ scalar under that shared secret.
+ *
+ * @param kInv                  32-byte k⁻¹ scalar (secp256k1)
+ * @param coordinatorKyberPubKey  Coordinator's ML-KEM-768 public key (1184 bytes)
+ * @returns EncryptedKInv — send this to the coordinator
+ */
+export function encryptKInvForCoordinator(
+  kInv: Uint8Array,
+  coordinatorKyberPubKey: Uint8Array
+): EncryptedKInv {
+  if (kInv.length !== 32) throw new Error("k⁻¹ must be exactly 32 bytes");
+
+  // Encapsulate: generate ephemeral shared secret + KEM ciphertext
+  const { kem, sharedSecret } = kyberEncapsulate(coordinatorKyberPubKey);
+
+  // Encrypt k⁻¹ under the shared secret (AES-256-GCM)
+  const payload = encryptWithSharedSecret(sharedSecret, kInv);
+
+  return { kem, payload };
+}
+
+/**
+ * Coordinator side: decrypt k⁻¹ received from a party.
+ *
+ * @param encrypted            The EncryptedKInv from encryptKInvForCoordinator
+ * @param coordinatorKyberPrivKey  Coordinator's ML-KEM-768 private key
+ * @returns 32-byte k⁻¹ scalar
+ */
+export function decryptKInv(
+  encrypted: EncryptedKInv,
+  coordinatorKyberPrivKey: Uint8Array
+): Uint8Array {
+  // Decapsulate: recover the shared secret using the KEM ciphertext
+  const sharedSecret = kyberDecapsulate(encrypted.kem, coordinatorKyberPrivKey);
+
+  // Decrypt k⁻¹
+  const kInv = decryptWithSharedSecret(sharedSecret, encrypted.payload);
+  if (kInv.length !== 32) throw new Error("Decrypted k⁻¹ is not 32 bytes — corrupted payload");
+  return kInv;
+}
+
+/** Wire type for encrypted k⁻¹ transport. */
+export interface EncryptedKInv {
+  /** ML-KEM-768 KEM ciphertext (1088 bytes). Contains the encapsulated shared secret. */
+  kem: Uint8Array;
+  /** AES-256-GCM encrypted k⁻¹. */
+  payload: EncryptedPayload;
+}
+
+// ---------------------------------------------------------------------------
+// RPC builders for ZK partial signature session (0x54, 0x55, 0x57)
+// ---------------------------------------------------------------------------
+
+function encodeU32BE(n: number): Buffer {
+  const buf = Buffer.alloc(4);
+  buf.writeUInt32BE(n);
+  return buf;
+}
+
+function encodeI128BE(v: bigint): Buffer {
+  // 16-byte big-endian two's complement signed 128-bit integer
+  const buf = Buffer.alloc(16);
+  let val = v < 0n ? v + (1n << 128n) : v;
+  for (let i = 15; i >= 0; i--) {
+    buf[i] = Number(val & 0xffn);
+    val >>= 8n;
+  }
+  return buf;
+}
+
+/**
+ * Build RPC args for `start_zk_psig_session` (shortname 0x54).
+ * Sets up the ZK partial sig session: how many parties will submit k⁻¹.
+ */
+export function buildStartZkPsigSessionArgs(keyId: number, numParties: number): Buffer {
+  return Buffer.concat([
+    Buffer.from([0x00, 0x00, 0x00, 0x00, 0x54]),
+    encodeU32BE(keyId),
+    Buffer.from([numParties]),
+  ]);
+}
+
+/**
+ * Build RPC args for `trigger_zk_partial_sig` (shortname 0x55).
+ * Fires the on-ZK-node computation σ_p = k⁻¹·(H(m) + r·s_p).
+ *
+ * @param rHi      High 128 bits of ECDSA r (nonce x-coord mod n)
+ * @param rLo      Low  128 bits of ECDSA r
+ * @param hmsgHi   High 128 bits of message hash H(m)
+ * @param hmsgLo   Low  128 bits of message hash H(m)
+ */
+export function buildTriggerZkPartialSigArgs(
+  keyId: number,
+  partyIndex: number,
+  rHi: bigint,
+  rLo: bigint,
+  hmsgHi: bigint,
+  hmsgLo: bigint
+): Buffer {
+  return Buffer.concat([
+    Buffer.from([0x00, 0x00, 0x00, 0x00, 0x55]),
+    encodeU32BE(keyId),
+    Buffer.from([partyIndex]),
+    encodeI128BE(rHi),
+    encodeI128BE(rLo),
+    encodeI128BE(hmsgHi),
+    encodeI128BE(hmsgLo),
+  ]);
+}
+
+/**
+ * Build RPC args for `combine_zk_partial_sigs` (shortname 0x57).
+ * Assembles the ZK-computed σ_i results, combines them mod n,
+ * verifies the combined ECDSA signature on-chain, and stores it.
+ */
+export function buildCombineZkPartialSigsArgs(keyId: number, taskId: number): Buffer {
+  return Buffer.concat([
+    Buffer.from([0x00, 0x00, 0x00, 0x00, 0x57]),
+    encodeU32BE(keyId),
+    encodeU32BE(taskId),
+  ]);
+}
+
+/**
+ * Split a 32-byte scalar (bigint or Uint8Array) into high/low 16-byte halves.
+ * Used to prepare k⁻¹ for ZK secret submission (two Sbi128 halves).
+ */
+export function splitScalarHalves(scalar32: Uint8Array): { hi: Uint8Array; lo: Uint8Array } {
+  if (scalar32.length !== 32) throw new Error("Scalar must be exactly 32 bytes");
+  return {
+    hi: scalar32.slice(0, 16),
+    lo: scalar32.slice(16, 32),
+  };
+}
+
+/**
+ * Split a 256-bit r value into (rHi, rLo) bigint pair for trigger_zk_partial_sig.
+ * r is the x-coordinate of the nonce point R = k⁻¹·G, reduced mod n.
+ */
+export function splitR256(rBytes: Uint8Array): { rHi: bigint; rLo: bigint } {
+  if (rBytes.length !== 32) throw new Error("r must be exactly 32 bytes");
+  let rHi = 0n;
+  let rLo = 0n;
+  for (let i = 0; i < 16; i++) rHi = (rHi << 8n) | BigInt(rBytes[i]);
+  for (let i = 16; i < 32; i++) rLo = (rLo << 8n) | BigInt(rBytes[i]);
+  return { rHi, rLo };
+}
+
+/**
+ * Split a 256-bit message hash into (hmsgHi, hmsgLo) bigint pair.
+ */
+export function splitHash256(hashBytes: Uint8Array): { hmsgHi: bigint; hmsgLo: bigint } {
+  if (hashBytes.length !== 32) throw new Error("Hash must be exactly 32 bytes");
+  let hmsgHi = 0n;
+  let hmsgLo = 0n;
+  for (let i = 0; i < 16; i++) hmsgHi = (hmsgHi << 8n) | BigInt(hashBytes[i]);
+  for (let i = 16; i < 32; i++) hmsgLo = (hmsgLo << 8n) | BigInt(hashBytes[i]);
+  return { hmsgHi, hmsgLo };
+}
+
+// ---------------------------------------------------------------------------
+// RPC builders for PQC public key registration (0x73, 0x74)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build RPC args for `register_dilithium_pubkey` (shortname 0x73).
+ * Stores the party's ML-DSA-65 public key (1952 bytes) on-chain.
+ * The on-chain key serves as an immutable anchor for off-chain Dilithium verification.
+ */
+export function buildRegisterDilithiumPubkeyArgs(
+  keyId: number,
+  partyIndex: number,
+  dilithiumPubkey: Uint8Array
+): Buffer {
+  if (dilithiumPubkey.length !== 1952) {
+    throw new Error(`Dilithium pubkey must be 1952 bytes (ML-DSA-65), got ${dilithiumPubkey.length}`);
+  }
+  return Buffer.concat([
+    encodeU32BE(keyId),
+    Buffer.from([partyIndex]),
+    encodeU32BE(dilithiumPubkey.length),
+    Buffer.from(dilithiumPubkey),
+  ]);
+}
+
+/**
+ * Build RPC args for `register_kyber_pubkey` (shortname 0x74).
+ * Stores the party's ML-KEM-768 public key (1184 bytes) on-chain.
+ * Other parties retrieve this to encrypt secrets (e.g. k⁻¹) for this party.
+ */
+export function buildRegisterKyberPubkeyArgs(
+  keyId: number,
+  partyIndex: number,
+  kyberPubkey: Uint8Array
+): Buffer {
+  if (kyberPubkey.length !== 1184) {
+    throw new Error(`Kyber pubkey must be 1184 bytes (ML-KEM-768), got ${kyberPubkey.length}`);
+  }
+  return Buffer.concat([
+    encodeU32BE(keyId),
+    Buffer.from([partyIndex]),
+    encodeU32BE(kyberPubkey.length),
+    Buffer.from(kyberPubkey),
+  ]);
+}
+
+/**
+ * Build RPC args for start_pqc_approval_session (shortname 0x75).
+ * Args: key_id(u32), task_id(u32), signing_parties(Vec<u8>)
+ */
+export function buildStartPqcApprovalSessionArgs(
+  keyId: number,
+  taskId: number,
+  signingParties: number[]
+): Uint8Array {
+  if (signingParties.length < 2) throw new Error("Need at least 2 approval parties");
+  const partiesVec = encodeVec(new Uint8Array(signingParties.map((p) => p & 0xff)));
+  return new Uint8Array([...encodeU32(keyId), ...encodeU32(taskId), ...partiesVec]);
+}
+
+/**
+ * Build RPC args for submit_pqc_approval (shortname 0x76).
+ * Args: key_id(u32), task_id(u32), party_index(u8), approval_hash(Vec<u8>)
+ */
+export function buildSubmitPqcApprovalArgs(
+  keyId: number,
+  taskId: number,
+  partyIndex: number,
+  approvalHash: Uint8Array
+): Uint8Array {
+  if (approvalHash.length !== 32) throw new Error("approvalHash must be 32 bytes");
+  return new Uint8Array([
+    ...encodeU32(keyId),
+    ...encodeU32(taskId),
+    partyIndex & 0xff,
+    ...encodeVec(approvalHash),
+  ]);
+}
+
+/**
+ * Build RPC args for finalize_pqc_approval (shortname 0x77).
+ * Args: key_id(u32), task_id(u32)
+ */
+export function buildFinalizePqcApprovalArgs(
+  keyId: number,
+  taskId: number
+): Uint8Array {
+  return new Uint8Array([...encodeU32(keyId), ...encodeU32(taskId)]);
 }

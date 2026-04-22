@@ -113,6 +113,57 @@ export async function submitZkShareHalf(
   return partisia.submitTransaction(tx);
 }
 
+// -- k⁻¹ ZK secret input helpers (for ZK partial sig path) --
+
+/**
+ * Build the additionalRpc buffer for submit_kinv_zk (0x53).
+ * Format: [shortname=0x53, key_id(u32), party_index(u8), is_high_half(bool as u8)]
+ *
+ * Each party submits their k⁻¹ contribution in two halves:
+ *   isHighHalf=true  → first 16 bytes of the 32-byte k⁻¹ scalar
+ *   isHighHalf=false → last 16 bytes
+ */
+export function buildKInvAdditionalRpc(
+  keyId: number,
+  partyIndex: number,
+  isHighHalf: boolean
+): Buffer {
+  return Buffer.from([
+    0x53,
+    ...encodeU32BE(keyId),
+    partyIndex,
+    isHighHalf ? 1 : 0,
+  ]);
+}
+
+/**
+ * Submit one 16-byte half of a party's k⁻¹ as a ZK secret input.
+ *
+ * Call twice per party — once with isHighHalf=true (bytes 0..16),
+ * once with isHighHalf=false (bytes 16..32).
+ */
+export async function submitZkKInvHalf(
+  partisia: PartisiaClient,
+  zkClient: RealZkClient,
+  contractAddress: string,
+  keyId: number,
+  partyIndex: number,
+  isHighHalf: boolean,
+  halfBytes: Uint8Array  // exactly 16 bytes
+): Promise<string> {
+  const secretBits = serializeSbi128(halfBytes);
+  const additionalRpc = buildKInvAdditionalRpc(keyId, partyIndex, isHighHalf);
+  const senderAddress = partisia.getSenderAddress();
+
+  const tx = await zkClient.buildOnChainInputTransaction(
+    senderAddress,
+    secretBits,
+    additionalRpc
+  );
+
+  return partisia.submitTransaction(tx);
+}
+
 // -- Delta ZK secret input helpers --
 
 /**

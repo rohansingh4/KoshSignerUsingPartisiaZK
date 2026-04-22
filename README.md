@@ -1138,3 +1138,132 @@ GG20:            s₁ = random()              ← only pieces exist
 ```
 
 **The private key `s = s₁ + s₂ + s₃` is a number that has never been computed by any computer, anywhere, ever. Yet we can sign valid Ethereum transactions with it.**
+
+---
+
+## What Needs to Be Fixed Before Production
+
+This section lists every gap between the current prototype and a production-ready system. The math and protocol logic are correct. These are the hardening steps that remain.
+
+---
+
+### 1. Missing ZK Range Proofs in MtA — CRITICAL
+
+**The problem:**
+During the MtA (Multiplicative-to-Additive) rounds in `mta.ts`, Party B sends `Enc(a·b - β)` back to Party A with zero proof that `b` is a valid scalar in `[0, N)`. A malicious party can deliberately send a crafted out-of-range value.
+
+**What an attacker can do:**
+Over multiple signing sessions, a malicious party uses these crafted values to extract another party's `kᵢ` (nonce share). Once they have `kᵢ` from enough sessions, they can compute the private key `s`.
+
+**This is the documented attack on unprotected GG20.** It is the exact reason the GG20 paper mandates Πenc (Paillier range proofs) and Πaff-g proofs in every MtA round.
+
+**Who needs to be malicious:** Just 1 out of 3 parties.
+
+**Fix:** Add zero-knowledge range proofs to every MtA exchange:
+- **Πenc**: Proves that Party A's encrypted value is in range before sending
+- **Πaff-g**: Proves Party B's response is a valid affine combination
+- Or replace with **CGGMP21** library which bundles all proofs correctly
+
+---
+
+### 2. Gamma Points Have No Commitment — MEDIUM
+
+**The problem:**
+Delta values (δᵢ) have a commit-reveal scheme — Party i commits `SHA-256(δᵢ)` first, then reveals. But Gamma points (Γᵢ = γᵢ·G) are submitted directly with no prior commitment.
+
+**What an attacker can do:**
+The last party to submit their Γᵢ can wait, see the other two Γᵢ values first, and choose their γᵢ to bias the combined Γ = Γ₁+Γ₂+Γ₃. This gives them partial control over `R = k⁻¹·G`, which weakens nonce security.
+
+**Fix:** Add a commit-reveal round for Γᵢ, same as what already exists for δᵢ:
+```
+Party i: submit SHA-256(Γᵢ)  →  wait for all commitments  →  reveal Γᵢ
+Contract: verify SHA-256(Γᵢ) matches before accepting
+```
+
+---
+
+### 3. All Parties Run on One Machine — ARCHITECTURAL
+
+**The problem:**
+`gg20Sign()` in `gg20-signing.ts` runs all 3 parties inside a single function on a single machine. All secrets — `k₁, k₂, k₃, γ₁, γ₂, γ₃, σ₁, σ₂, σ₃` — exist in the same process memory at the same time.
+
+This completely defeats the security model. Whoever runs this script has all secrets.
+
+**Fix:**
+- Each party runs as a **separate process on a separate machine**
+- Parties communicate only via encrypted messages (TLS-authenticated channels)
+- The `mtaRound1_A → send over network → mtaRound2_B → send back → mtaFinalize_A` steps in `mta.ts` already show the right separation — they just need to actually run on different machines
+- MtA session binding (`session?` parameter in `mta.ts`) must be **mandatory**, not optional
+
+---
+
+### 4. Paillier Key Size Is Borderline — MINOR
+
+**The problem:**
+`paillier.ts` generates 1024-bit primes → 2048-bit modulus. The code comment itself says "Recommended: 2048-bit primes."
+
+1024-bit Paillier is considered borderline by 2024 standards. It has not been broken, but it provides less margin than 2048-bit.
+
+**Fix:** Change `paillierKeygen(1024)` to `paillierKeygen(2048)` everywhere. Note: this makes key generation slower (~2–4 seconds per party).
+
+---
+
+### 5. Safe Prime Fallback Is a Security Hole — MINOR
+
+**The problem:**
+In `paillier.ts`, `generateSafePrime()` has this fallback:
+```typescript
+// Fallback: return a regular prime if safe prime generation is too slow
+const p = generatePrimeSync(bitLength, { bigint: true }) as bigint;
+return p;
+```
+
+If this triggers, the Paillier key is built on a non-safe prime. This weakens the Paillier security guarantees silently — no error is thrown.
+
+**Fix:** Remove the fallback. If safe prime generation takes too long, throw an error and let the caller retry. Never silently fall back to weaker parameters.
+
+---
+
+### 6. No Identifiable Abort — MINOR
+
+**The problem:**
+If a party submits a bad δᵢ, a wrong partial signature, or a corrupted MtA message, the protocol fails but nobody knows who cheated. The only option is to abort the entire signing session and retry — with the cheater still participating.
+
+**Fix:** Add cryptographic proofs of correct computation to each submission, so the contract can identify and evict the malicious party instead of aborting for everyone.
+
+---
+
+### 7. System Is 3-of-3, Not Threshold — AVAILABILITY
+
+**The problem:**
+The current DKG produces additive shares: `s = s₁ + s₂ + s₃`. All 3 parties must be online and cooperative to produce a signature. If 1 party goes offline permanently, the wallet is locked forever.
+
+This is not a security hole — but it is a real availability risk for a production wallet.
+
+**Fix:** Replace additive DKG with **Feldman VSS** (Verifiable Secret Sharing) to produce Shamir shares. Then any 2-of-3 parties can sign. See `client/threshold.md` for the full plan.
+
+---
+
+### Summary Table
+
+| # | Issue | Severity | Who is at risk | Fix |
+|---|-------|----------|---------------|-----|
+| 1 | No ZK range proofs in MtA | **Critical** | Any wallet using this with untrusted parties | Add Πenc + Πaff-g proofs, or use CGGMP21 |
+| 2 | Gamma points have no commitment | **Medium** | Any signing session | Add commit-reveal for Γᵢ like delta already has |
+| 3 | All parties on one machine | **Architectural** | Every deployment | Separate processes + network layer |
+| 4 | 1024-bit Paillier | Minor | Long-term security margin | Change to 2048-bit |
+| 5 | Safe prime fallback | Minor | Silent key weakening | Remove fallback, fail loudly |
+| 6 | No identifiable abort | Minor | Availability under attack | Add per-submission proofs |
+| 7 | 3-of-3, not 2-of-3 threshold | Availability | Wallet locked if 1 party offline | Feldman VSS DKG |
+
+---
+
+### The Shortest Path to Production
+
+If you want to skip building all of this from scratch, the recommended path is:
+
+1. **Replace `paillier.ts` + `mta.ts` + `gg20-signing.ts`** with a battle-tested library: [CGGMP21](https://github.com/LFDT-Lockness/cggmp21) (Rust) or [tss-lib](https://github.com/bnb-chain/tss-lib) (Go). These include all proofs, networking, and abort handling.
+2. **Keep the Partisia contract layer** — the DKG commit/reveal, on-chain R computation, and partial signature combination are all correct.
+3. **Add Feldman VSS** for threshold (2-of-3) using `client/threshold.md` as the spec.
+4. **Mandatory session binding** everywhere in the MtA layer.
+5. **Separate machines** for each party with TLS-authenticated communication.

@@ -1,3 +1,0 @@
-Result<Valid<DirtyIncompleteKeyShare<generic_ec_curves::rust_crypto::RustCryptoCurve<Secp256k1, ExpandMsgXmd<CoreWrapper<CtVariableCoreWrapper<Sha256VarCore, UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>, B0>, OidSha256>>>>>>, KeygenError>
-Result<Valid<DirtyIncompleteKeyShare<generic_ec_curves::rust_crypto::RustCryptoCurve<Secp256k1, ExpandMsgXmd<CoreWrapper<CtVariableCoreWrapper<Sha256VarCore, UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>, B0>, OidSha256>>>>>>, KeygenError>: KeyGenOutput
-Result<Valid<DirtyKeyShare<generic_ec_curves::rust_crypto::RustCryptoCurve<Secp256k1, ExpandMsgXmd<CoreWrapper<CtVariableCoreWrapper<Sha256VarCore, UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>, B0>, OidSha256>>>>>>, KeygenError>

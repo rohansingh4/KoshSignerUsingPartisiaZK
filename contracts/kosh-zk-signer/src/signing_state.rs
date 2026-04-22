@@ -4,6 +4,7 @@
 //! Shamir-split key storage on ZK nodes instead of plain engine commitments.
 
 use create_type_spec_derive::CreateTypeSpec;
+use pbc_contract_common::address::Address;
 use pbc_contract_common::avl_tree_map::AvlTreeMap;
 use read_write_rpc_derive::ReadWriteRPC;
 use read_write_state_derive::ReadWriteState;
@@ -69,7 +70,7 @@ pub struct ShareMetadata {
     pub share_index: u8,
     /// Whether this is the high half (true) or low half (false) of the 256-bit share.
     pub is_high_half: bool,
-    /// 0 = key_share, 1 = delta_value
+    /// 0 = key_share, 1 = delta_value, 2 = kinv (k⁻¹ for ZK partial sig)
     pub variable_type: u8,
 }
 
@@ -80,6 +81,12 @@ pub struct SignRequest {
     pub task_id: u32,
     /// The 32-byte message hash to sign (e.g., keccak256 of EVM tx).
     pub message_hash: Vec<u8>,
+    /// Transaction type tag (UTF-8). Empty = no policy applies.
+    pub tx_tag: Vec<u8>,
+    /// Policy ID resolved from tx_tag at queue time. 0 = no policy constraint.
+    pub policy_id: u32,
+    /// Effective minimum signer count resolved at queue time.
+    pub min_signers: u8,
 }
 
 /// Information about a completed (or in-progress) signing operation.
@@ -260,6 +267,153 @@ pub struct ZkKeyState {
     pub signing_deadline_block: i64,
     /// Number of blocks allowed for a signing round (configurable, default 100 ~= 5 minutes).
     pub signing_timeout_blocks: i64,
+
+    // --- Session isolation (Protection 5) ---
+
+    /// Auto-incrementing signing session ID. Prevents nonce reuse across sessions.
+    pub signing_session_id: u64,
+
+    // --- Schnorr proof fields (Protection 3) ---
+
+    /// DKG: slope commitments C_i1 = a_i·G (parallel with dkg_commit_indices).
+    pub dkg_slope_commitments: Vec<Vec<u8>>,
+    /// DKG: Schnorr proof R points (parallel with dkg_commit_indices).
+    pub dkg_schnorr_r_points: Vec<Vec<u8>>,
+    /// DKG: Schnorr proof z values (parallel with dkg_commit_indices).
+    pub dkg_schnorr_z_values: Vec<Vec<u8>>,
+
+    // --- Paillier key registration (Protection 2) ---
+
+    /// Party indices that have registered Paillier keys.
+    pub paillier_key_indices: Vec<u8>,
+    /// Paillier public key modulus N for each registered party (256+ bytes each).
+    pub paillier_keys: Vec<Vec<u8>>,
+    /// SHA-256 commitment to Paillier key proof (verified off-chain).
+    pub paillier_proof_commitments: Vec<Vec<u8>>,
+
+    // --- Identifiable abort / blame protocol (Protection 4) ---
+
+    /// Whether blame mode is active (entered when combined sig fails verification).
+    pub blame_active: bool,
+    /// Blame: opened k_i values from each party (32 bytes each, parallel with blame_indices).
+    pub blame_k_indices: Vec<u8>,
+    pub blame_k_openings: Vec<Vec<u8>>,
+    /// Blame: opened γ_i values from each party (32 bytes each, parallel with blame_indices).
+    pub blame_gamma_indices: Vec<u8>,
+    pub blame_gamma_openings: Vec<Vec<u8>>,
+    /// Block deadline for blame submissions.
+    pub blame_deadline_block: i64,
+
+    // --- Key refresh (Protection 7) ---
+
+    /// Whether a key refresh is in progress.
+    pub refresh_active: bool,
+    /// Refresh: slope commitment D_i1 = b_i·G from each party (parallel with refresh_indices).
+    pub refresh_indices: Vec<u8>,
+    pub refresh_slope_commitments: Vec<Vec<u8>>,
+
+    // --- Key recovery (Protection 8) ---
+
+    /// Whether a key recovery is in progress.
+    pub recovery_active: bool,
+    /// Recovery: which party was lost.
+    pub recovery_lost_party: u8,
+    /// Recovery: commitments from surviving parties (parallel with recovery_indices).
+    pub recovery_indices: Vec<u8>,
+    pub recovery_c0_commitments: Vec<Vec<u8>>,
+    pub recovery_c1_commitments: Vec<Vec<u8>>,
+
+    // --- Policy / RBAC (flattened — no nested Vec<CustomStruct>) ---
+
+    /// Policy IDs (parallel with all other policy_* fields below).
+    pub policy_ids: Vec<u32>,
+    /// Policy human-readable names (UTF-8 bytes, parallel with policy_ids).
+    pub policy_names: Vec<Vec<u8>>,
+    /// Transaction tags each policy applies to (UTF-8 bytes, parallel with policy_ids).
+    pub policy_tags: Vec<Vec<u8>>,
+    /// Mandatory party indices (1-based) for each policy (parallel with policy_ids).
+    pub policy_mandatory_parties: Vec<Vec<u8>>,
+    /// Minimum number of parties required per policy (0 = use global threshold).
+    pub policy_min_thresholds: Vec<u8>,
+    /// Auto-incrementing policy ID counter (starts at 1).
+    pub next_policy_id: u32,
+
+    // --- Party address binding (flattened) ---
+
+    /// Party indices that have registered wallet addresses (parallel with party_addr_values).
+    pub party_addr_indices: Vec<u8>,
+    /// Wallet addresses for each registered party (parallel with party_addr_indices).
+    pub party_addr_values: Vec<Address>,
+
+    // --- GG20 active signing parties ---
+
+    /// Party indices participating in the current GG20 signing session.
+    /// Set by gg20_start_signing. Used to validate submissions.
+    pub gg20_signing_parties: Vec<u8>,
+    /// Active GG20 signing task ID. Zero when no GG20 session is active.
+    pub gg20_task_id: u32,
+    /// Policy ID bound to the active GG20 session. Zero means no policy.
+    pub gg20_policy_id: u32,
+    /// Required parties for the active GG20 session.
+    pub gg20_required_parties: Vec<u8>,
+    /// Effective minimum signer count for the active GG20 session.
+    pub gg20_min_signers: u8,
+
+    // --- PQC approval session (contract-authoritative approval gate) ---
+
+    /// Whether a PQC approval session is active.
+    pub pqc_approval_active: bool,
+    /// Whether the active PQC approval session has been finalized.
+    pub pqc_approval_approved: bool,
+    /// Task ID bound to the active PQC approval session.
+    pub pqc_approval_task_id: u32,
+    /// Message hash bound to the active PQC approval session.
+    pub pqc_approval_message_hash: Vec<u8>,
+    /// tx_tag bound to the active PQC approval session.
+    pub pqc_approval_tx_tag: Vec<u8>,
+    /// Signing subset proposed for the active PQC approval session.
+    pub pqc_approval_signing_parties: Vec<u8>,
+    /// Required parties derived from policy for the active PQC approval session.
+    pub pqc_approval_required_parties: Vec<u8>,
+    /// Effective minimum signer count for the active PQC approval session.
+    pub pqc_approval_min_signers: u8,
+    /// Deterministic challenge bound to the approval session.
+    pub pqc_approval_challenge: Vec<u8>,
+    /// Block deadline for collecting PQC approvals.
+    pub pqc_approval_deadline_block: i64,
+    /// Parties that have submitted contract-bound approval digests.
+    pub pqc_approval_received_parties: Vec<u8>,
+    /// Approval digests parallel with pqc_approval_received_parties.
+    pub pqc_approval_received_hashes: Vec<Vec<u8>>,
+
+    // --- ZK partial signature computation (on ZK nodes) ---
+
+    /// Whether a ZK partial sig session is active.
+    pub zk_psig_active: bool,
+    /// ZK variable IDs for k⁻¹ halves submitted via submit_kinv_zk (0x53).
+    pub zk_psig_kinv_vars: Vec<StoredShareVar>,
+    /// Number of k⁻¹ ZK variables received so far.
+    pub zk_psig_kinv_count: u32,
+    /// Expected k⁻¹ ZK variables (num_parties * 2 for hi/lo halves).
+    pub zk_psig_kinv_expected: u32,
+    /// Party indices for which ZK partial σ_i results have been returned
+    /// (parallel with zk_psig_result_hi_bytes and zk_psig_result_lo_bytes).
+    pub zk_psig_result_indices: Vec<u8>,
+    /// High 128-bit halves of the ZK-computed partial signatures (16 bytes each).
+    pub zk_psig_result_hi_bytes: Vec<Vec<u8>>,
+    /// Low 128-bit halves of the ZK-computed partial signatures (16 bytes each).
+    pub zk_psig_result_lo_bytes: Vec<Vec<u8>>,
+
+    // --- PQC public key registry (quantum-safe identity) ---
+
+    /// Party indices that have registered Dilithium (ML-DSA-65) public keys.
+    pub dilithium_pubkey_indices: Vec<u8>,
+    /// Dilithium public keys (1952 bytes each for ML-DSA-65, parallel with indices).
+    pub dilithium_pubkeys: Vec<Vec<u8>>,
+    /// Party indices that have registered Kyber (ML-KEM-768) public keys.
+    pub kyber_pubkey_indices: Vec<u8>,
+    /// Kyber public keys (1184 bytes each for ML-KEM-768, parallel with indices).
+    pub kyber_pubkeys: Vec<Vec<u8>>,
 }
 
 impl ZkKeyState {
@@ -314,6 +468,63 @@ impl ZkKeyState {
             gg20_delta_zk_expected: 0,
             signing_deadline_block: 0,
             signing_timeout_blocks: 100, // ~5 minutes on Partisia
+            signing_session_id: 0,
+            dkg_slope_commitments: Vec::new(),
+            dkg_schnorr_r_points: Vec::new(),
+            dkg_schnorr_z_values: Vec::new(),
+            paillier_key_indices: Vec::new(),
+            paillier_keys: Vec::new(),
+            paillier_proof_commitments: Vec::new(),
+            blame_active: false,
+            blame_k_indices: Vec::new(),
+            blame_k_openings: Vec::new(),
+            blame_gamma_indices: Vec::new(),
+            blame_gamma_openings: Vec::new(),
+            blame_deadline_block: 0,
+            refresh_active: false,
+            refresh_indices: Vec::new(),
+            refresh_slope_commitments: Vec::new(),
+            recovery_active: false,
+            recovery_lost_party: 0,
+            recovery_indices: Vec::new(),
+            recovery_c0_commitments: Vec::new(),
+            recovery_c1_commitments: Vec::new(),
+            policy_ids: Vec::new(),
+            policy_names: Vec::new(),
+            policy_tags: Vec::new(),
+            policy_mandatory_parties: Vec::new(),
+            policy_min_thresholds: Vec::new(),
+            next_policy_id: 1,
+            party_addr_indices: Vec::new(),
+            party_addr_values: Vec::new(),
+            gg20_signing_parties: Vec::new(),
+            gg20_task_id: 0,
+            gg20_policy_id: 0,
+            gg20_required_parties: Vec::new(),
+            gg20_min_signers: 0,
+            pqc_approval_active: false,
+            pqc_approval_approved: false,
+            pqc_approval_task_id: 0,
+            pqc_approval_message_hash: Vec::new(),
+            pqc_approval_tx_tag: Vec::new(),
+            pqc_approval_signing_parties: Vec::new(),
+            pqc_approval_required_parties: Vec::new(),
+            pqc_approval_min_signers: 0,
+            pqc_approval_challenge: Vec::new(),
+            pqc_approval_deadline_block: 0,
+            pqc_approval_received_parties: Vec::new(),
+            pqc_approval_received_hashes: Vec::new(),
+            zk_psig_active: false,
+            zk_psig_kinv_vars: Vec::new(),
+            zk_psig_kinv_count: 0,
+            zk_psig_kinv_expected: 0,
+            zk_psig_result_indices: Vec::new(),
+            zk_psig_result_hi_bytes: Vec::new(),
+            zk_psig_result_lo_bytes: Vec::new(),
+            dilithium_pubkey_indices: Vec::new(),
+            dilithium_pubkeys: Vec::new(),
+            kyber_pubkey_indices: Vec::new(),
+            kyber_pubkeys: Vec::new(),
         }
     }
 
@@ -323,7 +534,13 @@ impl ZkKeyState {
     }
 
     /// Queue a message hash for signing. Returns the signing task ID.
-    pub fn queue_signing(&mut self, message_hash: Vec<u8>) -> u32 {
+    pub fn queue_signing(
+        &mut self,
+        message_hash: Vec<u8>,
+        tx_tag: Vec<u8>,
+        policy_id: u32,
+        min_signers: u8,
+    ) -> u32 {
         assert_eq!(
             message_hash.len(),
             32,
@@ -346,6 +563,9 @@ impl ZkKeyState {
         self.pending_sign_requests.push(SignRequest {
             task_id,
             message_hash,
+            tx_tag,
+            policy_id,
+            min_signers,
         });
 
         if matches!(self.signing_phase, ZkSigningPhase::Idle {}) {
@@ -353,6 +573,80 @@ impl ZkKeyState {
         }
 
         task_id
+    }
+
+    /// Find the index into the policy_* vecs for the given tx_tag. Returns None if not found.
+    pub fn find_policy_index_for_tag(&self, tag: &[u8]) -> Option<usize> {
+        if tag.is_empty() {
+            return None;
+        }
+        self.policy_tags.iter().position(|t| t.as_slice() == tag)
+    }
+
+    /// Look up the policy_id for a tx_tag. Returns 0 if no policy matches.
+    pub fn resolve_policy_id_for_tag(&self, tag: &[u8]) -> u32 {
+        self.find_policy_index_for_tag(tag)
+            .map(|i| self.policy_ids[i])
+            .unwrap_or(0)
+    }
+
+    /// Get the wallet address bound to a party index, if any.
+    pub fn get_party_address(&self, party_index: u8) -> Option<&Address> {
+        self.party_addr_indices
+            .iter()
+            .position(|&idx| idx == party_index)
+            .map(|i| &self.party_addr_values[i])
+    }
+
+    pub fn has_registered_address(&self, party_index: u8) -> bool {
+        self.party_addr_indices.contains(&party_index)
+    }
+
+    pub fn has_registered_dilithium_pubkey(&self, party_index: u8) -> bool {
+        self.dilithium_pubkey_indices.contains(&party_index)
+    }
+
+    pub fn has_registered_kyber_pubkey(&self, party_index: u8) -> bool {
+        self.kyber_pubkey_indices.contains(&party_index)
+    }
+
+    pub fn is_party_ready_for_signing(&self, party_index: u8) -> bool {
+        self.has_registered_address(party_index)
+            && self.has_registered_dilithium_pubkey(party_index)
+            && self.has_registered_kyber_pubkey(party_index)
+    }
+
+    pub fn assert_all_parties_ready_for_signing(&self) {
+        for party_index in 1..=self.num_shares {
+            assert!(
+                self.is_party_ready_for_signing(party_index),
+                "Party {} is not operationally ready: address, Dilithium key, and Kyber key must all be registered",
+                party_index
+            );
+        }
+    }
+
+    pub fn is_active_signing_party(&self, party_index: u8) -> bool {
+        self.gg20_signing_parties.contains(&party_index)
+    }
+
+    pub fn is_pqc_approval_party(&self, party_index: u8) -> bool {
+        self.pqc_approval_signing_parties.contains(&party_index)
+    }
+
+    pub fn reset_pqc_approval_session(&mut self) {
+        self.pqc_approval_active = false;
+        self.pqc_approval_approved = false;
+        self.pqc_approval_task_id = 0;
+        self.pqc_approval_message_hash.clear();
+        self.pqc_approval_tx_tag.clear();
+        self.pqc_approval_signing_parties.clear();
+        self.pqc_approval_required_parties.clear();
+        self.pqc_approval_min_signers = 0;
+        self.pqc_approval_challenge.clear();
+        self.pqc_approval_deadline_block = 0;
+        self.pqc_approval_received_parties.clear();
+        self.pqc_approval_received_hashes.clear();
     }
 
     /// Start the next pending signing request.

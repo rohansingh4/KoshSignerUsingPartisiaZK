@@ -34,6 +34,7 @@ import {
   buildDkgRevealArgs,
   buildDkgFinalizeArgs,
   buildDkgCompleteKeygenArgs,
+  generateSchnorrProof,
   toHex,
   type DkgShare,
 } from "./dkg-party.js";
@@ -51,6 +52,12 @@ import {
 } from "./gg20-signing.js";
 import { paillierKeygen } from "./paillier.js";
 import { bigintTo32Bytes } from "./shamir-ts.js";
+import {
+  queueSignAndApprove,
+  registerOnchainPqcIdentities,
+  startApprovedGg20,
+  submitAndWait,
+} from "./testnet-pqc.js";
 import {
   keccak256,
   serializeTransaction,
@@ -75,71 +82,8 @@ if (!SENDER_KEY || !SENDER_ADDR || !SIGNER_ADDR) {
   process.exit(1);
 }
 
-// --- Helpers ---
-
-function encodeU32(n: number): Uint8Array {
-  const buf = new Uint8Array(4);
-  buf[0] = (n >> 24) & 0xff;
-  buf[1] = (n >> 16) & 0xff;
-  buf[2] = (n >> 8) & 0xff;
-  buf[3] = n & 0xff;
-  return buf;
-}
-
-function encodeVec(data: Uint8Array): Uint8Array {
-  return new Uint8Array([...encodeU32(data.length), ...data]);
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-async function submitAndWait(
-  partisia: PartisiaClient,
-  contractAddress: string,
-  shortname: number,
-  args: Uint8Array,
-  label: string
-): Promise<boolean> {
-  const client = partisia.getTransactionClient();
-  const shortnameBytes = shortname <= 0xff ? [shortname] : [shortname >> 8, shortname & 0xff];
-  const wasmRpc = Buffer.from([...shortnameBytes, ...args]);
-  const rpc = Buffer.concat([Buffer.from([0x09]), wasmRpc]);
-  const tx = { address: contractAddress, rpc };
-  const sent = await client.signAndSend(tx, 500000);
-  const txId = sent.transactionPointer.identifier;
-  console.log(`  Tx: ${txId}`);
-  const tree = await client.waitForSpawnedEvents(sent);
-
-  // Check root transaction status
-  const rootStatus = (tree as any).root?.transaction?.executionStatus
-    ?? (tree as any).transaction?.executionStatus;
-  if (rootStatus?.success === false) {
-    const msg = rootStatus.failure?.errorMessage ?? "unknown error";
-    console.error(`  ${label} FAILED (root): ${msg.split("\n")[0]}`);
-    return false;
-  }
-
-  // Check all spawned events for failures
-  const events = tree.events ?? (tree as any).spawned ?? [];
-  for (const ev of events) {
-    const es = (ev as any).transaction?.executionStatus
-      ?? (ev as any).executionStatus;
-    if (es?.success === false) {
-      const msg = es.failure?.errorMessage ?? es.errorMessage ?? "unknown error";
-      console.error(`  ${label} FAILED (spawned): ${msg.split("\n")[0]}`);
-      return false;
-    }
-  }
-
-  // Also check if the identifier was returned as failed
-  if ((tree as any).failed) {
-    console.error(`  ${label} FAILED: transaction tree marked as failed`);
-    return false;
-  }
-
-  console.log(`  ${label} OK`);
-  return true;
 }
 
 // --- Main ---
@@ -154,9 +98,10 @@ async function main() {
     senderAddress: SENDER_ADDR,
   });
 
-  const keyId = 1;
+  const keyId = Date.now() % 100000; // unique per run to avoid collisions
   const numParties = 3;
-  const DKG_SEED = "kosh-gg20-prod-v2";
+  const DKG_SEED = `kosh-gg20-prod-v2-${keyId}`;
+  const txTag = process.env.TX_TAG ?? "";
 
   // =======================================================================
   // Phase 1: DKG (same as before — key born split)
@@ -181,8 +126,25 @@ async function main() {
   console.log("--- Phase 2: On-chain DKG ceremony ---");
   if (!await submitAndWait(partisia, SIGNER_ADDR, 0x20, buildDkgCreateKeyArgs(keyId, numParties), "dkg_create_key")) process.exit(1);
 
+  // Generate Schnorr proofs + slope commitments for each party (Protection 3)
+  const schnorrProofs: Array<{ R: Uint8Array; z: Uint8Array }> = [];
+  const slopeCommitments: Uint8Array[] = [];
   for (let i = 0; i < numParties; i++) {
-    if (!await submitAndWait(partisia, SIGNER_ADDR, 0x21, buildDkgCommitArgs(keyId, i + 1, parties[i].commitmentHash), `commit_${i + 1}`)) process.exit(1);
+    const proof = await generateSchnorrProof(parties[i].secretScalar, parties[i].publicKeyShare, i + 1);
+    schnorrProofs.push(proof);
+    // Slope commitment C_i1 = a_i·G where a_i is a random scalar (use part of secret for determinism)
+    const { secp256k1: secp } = await import("@noble/curves/secp256k1");
+    const a_i = parties[i].secretScalar ^ BigInt(i + 1); // simple deterministic slope
+    const safeAi = ((a_i % secp.CURVE.n) + secp.CURVE.n) % secp.CURVE.n;
+    const C_i1 = secp.ProjectivePoint.BASE.multiply(safeAi);
+    slopeCommitments.push(C_i1.toRawBytes(true));
+  }
+
+  for (let i = 0; i < numParties; i++) {
+    if (!await submitAndWait(partisia, SIGNER_ADDR, 0x21, buildDkgCommitArgs(
+      keyId, i + 1, parties[i].commitmentHash,
+      slopeCommitments[i], schnorrProofs[i].R, schnorrProofs[i].z
+    ), `commit_${i + 1}`)) process.exit(1);
     await sleep(2000);
   }
   for (let i = 0; i < numParties; i++) {
@@ -215,6 +177,9 @@ async function main() {
   }
   console.log("  Each party's Paillier keys stay on their own machine\n");
 
+  console.log("--- Phase 3b: On-chain identity + PQC key registration ---");
+  await registerOnchainPqcIdentities(partisia, SIGNER_ADDR, keyId, [1, 2, 3], SENDER_ADDR);
+
   // =======================================================================
   // Phase 4: Build EVM transaction
   // =======================================================================
@@ -229,17 +194,8 @@ async function main() {
   console.log(`  Balance: ${formatEther(balance)} ETH`);
 
   if (balance === 0n) {
-    console.log(`\n  Send Sepolia ETH to: ${ethAddress}`);
-    console.log("  Polling every 15s (max 10 min)...\n");
-    const maxWait = 600_000;
-    const start = Date.now();
-    while (balance === 0n && Date.now() - start < maxWait) {
-      await sleep(15000);
-      balance = await sepoliaClient.getBalance({ address: ethAddress as `0x${string}` });
-      if (balance > 0n) console.log(`  Funded! ${formatEther(balance)} ETH`);
-      else process.stdout.write(".");
-    }
-    if (balance === 0n) { console.log("\n  Timed out."); process.exit(1); }
+    console.log(`\n  No Sepolia ETH — will skip broadcast but still test signing.`);
+    console.log(`  To broadcast later, fund: ${ethAddress}\n`);
   }
 
   const evmNonce = await sepoliaClient.getTransactionCount({ address: ethAddress as `0x${string}` });
@@ -259,9 +215,9 @@ async function main() {
   const msgHash = new Uint8Array(Buffer.from(txHash.slice(2), "hex"));
   console.log(`  Message hash: ${txHash}`);
 
-  // Queue signing on contract
-  const signArgs = new Uint8Array([...encodeU32(keyId), ...encodeVec(msgHash)]);
-  if (!await submitAndWait(partisia, SIGNER_ADDR, 0x03, signArgs, "sign_message")) process.exit(1);
+  const taskId = 0;
+  const signingParties = parties.map((_, i) => i + 1); // [1, 2, 3]
+  await queueSignAndApprove(partisia, SIGNER_ADDR, keyId, taskId, msgHash, txTag, signingParties);
 
   // =======================================================================
   // Phase 5: GG20 Signing Protocol (FULLY TRUSTLESS)
@@ -287,10 +243,8 @@ async function main() {
   // =======================================================================
   console.log("\n--- Phase 6: On-chain GG20 verification ---");
 
-  // 6a. Start GG20 session
-  const taskId = 0;
-  const startArgs = new Uint8Array([...encodeU32(keyId), ...encodeU32(taskId), numParties]);
-  if (!await submitAndWait(partisia, SIGNER_ADDR, 0x50, startArgs, "gg20_start_signing")) process.exit(1);
+  // 6a. Start GG20 session — send full signing party list for on-chain policy enforcement
+  await startApprovedGg20(partisia, SIGNER_ADDR, keyId, taskId, signingParties);
 
   // 6b. Submit δ_i values — try ZK encrypted path first, fall back to plaintext
   console.log("\n  Submitting δ_i values (additive shares of k·γ):");
