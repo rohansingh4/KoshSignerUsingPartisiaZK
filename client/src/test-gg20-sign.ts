@@ -24,7 +24,7 @@
  */
 
 import { PartisiaClient } from "./partisia.js";
-import { createZkClient, submitZkShareHalf, submitZkDelta } from "./zk-signer.js";
+import { createZkClient, submitZkShareHalf } from "./zk-signer.js";
 import {
   generateDkgShare,
   getShareHalves,
@@ -46,8 +46,6 @@ import {
   buildGG20FinalizeRArgs,
   buildSubmitPartialSigArgs,
   buildCommitPartialSigArgs,
-  buildOpenGG20DeltasArgs,
-  splitDelta,
   sha256,
 } from "./gg20-signing.js";
 import { paillierKeygen } from "./paillier.js";
@@ -246,44 +244,19 @@ async function main() {
   // 6a. Start GG20 session — send full signing party list for on-chain policy enforcement
   await startApprovedGg20(partisia, SIGNER_ADDR, keyId, taskId, signingParties);
 
-  // 6b. Submit δ_i values — try ZK encrypted path first, fall back to plaintext
-  console.log("\n  Submitting δ_i values (additive shares of k·γ):");
-  let deltaZkSuccess = false;
-  try {
-    console.log("  Attempting ZK encrypted delta submission...");
-    for (const d of sigData.deltas) {
-      const [highBytes, lowBytes] = splitDelta(d.bytes);
-      await submitZkDelta(partisia, zkClient, SIGNER_ADDR, keyId, d.partyIndex, true, highBytes);
-      await sleep(3000);
-      await submitZkDelta(partisia, zkClient, SIGNER_ADDR, keyId, d.partyIndex, false, lowBytes);
-      await sleep(3000);
-      console.log(`  ZK delta_${d.partyIndex} submitted (high + low halves)`);
-    }
-    // Open the ZK delta variables
-    await sleep(3000);
-    if (await submitAndWait(partisia, SIGNER_ADDR, 0x52, buildOpenGG20DeltasArgs(keyId), "open_gg20_deltas")) {
-      console.log("  ZK delta path SUCCESS — deltas submitted encrypted and opened on-chain");
-      deltaZkSuccess = true;
-      // Wait for on_shares_opened callback to process
-      await sleep(5000);
-    } else {
-      console.log("  open_gg20_deltas failed, falling back to plaintext...");
-    }
-  } catch (e: any) {
-    console.log(`  ZK delta path failed: ${e.message?.split("\n")[0] ?? e}`);
-    console.log("  Falling back to plaintext delta submission...");
-  }
-
-  if (!deltaZkSuccess) {
-    // Plaintext fallback (existing behavior)
-    for (const d of sigData.deltas) {
-      if (!await submitAndWait(
-        partisia, SIGNER_ADDR, 0x45,
-        buildSubmitDeltaArgs(keyId, d.partyIndex, d.bytes),
-        `delta_${d.partyIndex}`
-      )) process.exit(1);
-      await sleep(2000);
-    }
+  // 6b. Submit δ_i values as plaintext.
+  // In GG20, δ_i = k_i·γ_i + Σ(MtA outputs). The combined δ = k·γ is
+  // designed to be revealed publicly — it is used to compute R = δ⁻¹·Γ.
+  // Revealing individual δ_i shares is safe because they are masked by the
+  // random γ_i values. This is Round 4 of the GG20 paper.
+  console.log("\n  Submitting δ_i values (GG20 Round 4 — safe to reveal):");
+  for (const d of sigData.deltas) {
+    if (!await submitAndWait(
+      partisia, SIGNER_ADDR, 0x45,
+      buildSubmitDeltaArgs(keyId, d.partyIndex, d.bytes),
+      `delta_${d.partyIndex}`
+    )) process.exit(1);
+    await sleep(2000);
   }
 
   // 6c. Submit Γ_i points

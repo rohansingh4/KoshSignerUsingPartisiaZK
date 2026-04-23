@@ -25,6 +25,8 @@ interface ZkSignerKeyState {
       verified: boolean;
     }
   >;
+  gg20_delta_zk_count: number;
+  gg20_delta_zk_expected: number;
 }
 
 interface ZkSignerState {
@@ -261,5 +263,37 @@ export async function pollSigningComplete(
       return null;
     },
     { intervalMs: options?.intervalMs ?? 5000, timeoutMs: options?.timeoutMs ?? 300_000 }
+  );
+}
+
+/**
+ * Poll until all ZK delta secret inputs have been confirmed and registered
+ * in the contract state (gg20_delta_zk_count >= gg20_delta_zk_expected).
+ *
+ * Must be called after all submitZkDelta calls and BEFORE open_gg20_deltas.
+ * Without this, open_gg20_deltas will fail with "No delta ZK variables to open"
+ * because the ZK nodes haven't finished processing the inputs yet.
+ */
+export async function pollUntilDeltaZkReady(
+  partisia: PartisiaClient,
+  signerAddress: string,
+  keyId: number,
+  expectedCount: number,
+  options?: { intervalMs?: number; timeoutMs?: number }
+): Promise<void> {
+  await partisia.pollUntil<true>(
+    signerAddress,
+    (state) => {
+      const signerState = state as unknown as ZkSignerState;
+      const key = signerState?.keys?.[String(keyId)];
+      if (
+        key?.gg20_delta_zk_count !== undefined &&
+        key.gg20_delta_zk_count >= expectedCount
+      ) {
+        return true;
+      }
+      return null;
+    },
+    { intervalMs: options?.intervalMs ?? 4000, timeoutMs: options?.timeoutMs ?? 120_000 }
   );
 }
