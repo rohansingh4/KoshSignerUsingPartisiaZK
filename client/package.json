@@ -3,6 +3,18 @@
   "version": "0.1.0",
   "description": "E2E client for Kosh keyless accounts — EVM transaction signing via Partisia MPC",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
     "deploy": "tsx src/deploy-zk-signer.ts",

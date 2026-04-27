@@ -40,6 +40,7 @@
 
 import { PartisiaClient } from "./partisia.js";
 import * as fs from "fs";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
 import { createZkClient, submitZkShareHalf } from "./zk-signer.js";
 import {
   generateThresholdDkgShare,
@@ -128,13 +129,15 @@ const NODE_URL = process.env.PARTISIA_NODE_URL ?? "https://node1.testnet.partisi
 const KEY_ID = parseInt(process.env.KEY_ID ?? "1");
 const NUM_PARTIES = parseInt(process.env.NUM_PARTIES ?? "3");
 const SIGNING_SUBSET = (process.env.SIGNING_SUBSET ?? "1,2").split(",").map(Number);
-const TASK_ID = parseInt(process.env.TASK_ID ?? "0");
 /** Transaction type tag — matched against policy rules. Empty = no policy applies. */
 const TX_TAG = process.env.TX_TAG ?? "";
 /** Optional path to a JSON file persisting policy rules across restarts. */
 const POLICY_FILE = process.env.POLICY_FILE;
-const PQC_ENABLED = (process.env.PQC_ENABLED ?? "1") !== "0";
 const PQC_KEY_FILE = process.env.PQC_KEY_FILE;
+const SHARE_FILE = process.env.SHARE_FILE;
+const SHARE_FILE_KEY = process.env.SHARE_FILE_KEY ?? "";
+const REUSE_EXISTING_KEY = (process.env.REUSE_EXISTING_KEY ?? "0") === "1";
+const IS_RELAYER = PARTY_INDEX === 1;
 
 if (!PARTY_INDEX || !COORD_URL || !SENDER_KEY || !SENDER_ADDR || !SIGNER_ADDR) {
   console.error("Missing required env vars: PARTY_INDEX, COORD_URL, PARTISIA_SENDER_KEY, PARTISIA_SENDER_ADDRESS, SIGNER_ADDRESS");
@@ -156,6 +159,23 @@ type PqcKeyFile = {
   kyberPrivateKey: string;
   dilithiumPublicKey: string;
   dilithiumPrivateKey: string;
+};
+
+type ShareFile = {
+  keyId: number;
+  partyIndex: number;
+  shamirShareHex: string;
+  combinedPkHex: string;
+  // Tracks how many sign_message calls have been made for this key.
+  // Used to compute the correct task_id on each reuse.
+  nextTaskId: number;
+};
+
+type EncryptedShareFile = {
+  version: 1;
+  nonce: string;
+  tag: string;
+  ciphertext: string;
 };
 
 let pqcIdentity: PqcIdentity | null = null;
@@ -192,6 +212,75 @@ function loadOrCreatePqcIdentity(): PqcIdentity {
   }
 
   return pqcIdentity;
+}
+
+function decryptShareFile(): ShareFile {
+  if (!SHARE_FILE) throw new Error("SHARE_FILE env var is required");
+  if (!SHARE_FILE_KEY) throw new Error("SHARE_FILE_KEY is required when SHARE_FILE is used");
+  const raw = fs.readFileSync(SHARE_FILE, "utf-8");
+  const wrapped = JSON.parse(raw) as EncryptedShareFile;
+  const key = createHash("sha256").update(SHARE_FILE_KEY).digest();
+  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(wrapped.nonce, "base64"));
+  decipher.setAuthTag(Buffer.from(wrapped.tag, "base64"));
+  const plaintext = Buffer.concat([
+    decipher.update(Buffer.from(wrapped.ciphertext, "base64")),
+    decipher.final(),
+  ]).toString("utf-8");
+  return JSON.parse(plaintext) as ShareFile;
+}
+
+function loadPersistedShare(): { shamirShare: ShamirShare; combinedPk: Uint8Array; nextTaskId: number } | null {
+  if (!SHARE_FILE || !fs.existsSync(SHARE_FILE)) return null;
+  const data = decryptShareFile();
+  if (data.keyId !== KEY_ID || data.partyIndex !== PARTY_INDEX) {
+    throw new Error(`Persisted share file does not match KEY_ID=${KEY_ID} PARTY_INDEX=${PARTY_INDEX}`);
+  }
+  return {
+    shamirShare: {
+      partyIndex: data.partyIndex,
+      share: BigInt(data.shamirShareHex),
+    },
+    combinedPk: hexToBytes(data.combinedPkHex),
+    nextTaskId: data.nextTaskId ?? 0,
+  };
+}
+
+/** Re-encrypt and write the share file with an incremented nextTaskId. */
+function advanceShareTaskId(): void {
+  if (!SHARE_FILE || !fs.existsSync(SHARE_FILE)) return;
+  const data = decryptShareFile();
+  data.nextTaskId = (data.nextTaskId ?? 0) + 1;
+  persistShare(
+    { partyIndex: data.partyIndex, share: BigInt(data.shamirShareHex) },
+    hexToBytes(data.combinedPkHex),
+    data.nextTaskId,
+  );
+}
+
+function persistShare(shamirShare: ShamirShare, combinedPk: Uint8Array, nextTaskId = 0): void {
+  if (!SHARE_FILE) return;
+  if (!SHARE_FILE_KEY) throw new Error("SHARE_FILE_KEY is required when SHARE_FILE is used");
+  const data: ShareFile = {
+    keyId: KEY_ID,
+    partyIndex: PARTY_INDEX,
+    shamirShareHex: `0x${shamirShare.share.toString(16)}`,
+    combinedPkHex: toHex(combinedPk),
+    nextTaskId,
+  };
+  const key = createHash("sha256").update(SHARE_FILE_KEY).digest();
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(data)),
+    cipher.final(),
+  ]);
+  const wrapped: EncryptedShareFile = {
+    version: 1,
+    nonce: nonce.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+  };
+  fs.writeFileSync(SHARE_FILE, JSON.stringify(wrapped, null, 2), "utf-8");
 }
 
 function computePqcSessionChallenge(
@@ -363,10 +452,6 @@ async function phasePqcApprovals(
   signingSubset: number[],
   taskId: number,
 ): Promise<void> {
-  if (!PQC_ENABLED) {
-    console.log(`  [P${PARTY_INDEX}] PQC approvals: disabled`);
-    return;
-  }
 
   const identity = loadOrCreatePqcIdentity();
   const challenge = computePqcSessionChallenge(KEY_ID, taskId, msgHash, TX_TAG, signingSubset);
@@ -381,15 +466,15 @@ async function phasePqcApprovals(
     await read(`onchain_pqc_session_started_${KEY_ID}_${taskId}`);
   }
 
-  await post(`pqc_kyber_pk_${PARTY_INDEX}`, bytesToBase64(identity.kyber.publicKey));
-  await post(`pqc_dilithium_pk_${PARTY_INDEX}`, bytesToBase64(identity.dilithium.publicKey));
+  await post(`pqc_kyber_pk_${KEY_ID}_${PARTY_INDEX}`, bytesToBase64(identity.kyber.publicKey));
+  await post(`pqc_dilithium_pk_${KEY_ID}_${PARTY_INDEX}`, bytesToBase64(identity.dilithium.publicKey));
 
   const kyberPks = new Map<number, Uint8Array>();
   const dilithiumPks = new Map<number, Uint8Array>();
 
   for (const j of signingSubset) {
-    const kyberPk = base64ToBytes(await read(`pqc_kyber_pk_${j}`));
-    const dilithiumPk = base64ToBytes(await read(`pqc_dilithium_pk_${j}`));
+    const kyberPk = base64ToBytes(await read(`pqc_kyber_pk_${KEY_ID}_${j}`));
+    const dilithiumPk = base64ToBytes(await read(`pqc_dilithium_pk_${KEY_ID}_${j}`));
     kyberPks.set(j, kyberPk);
     dilithiumPks.set(j, dilithiumPk);
   }
@@ -486,17 +571,17 @@ async function phasePqcApprovals(
   }
 
   const approvalHash = pqcSha256(approvalBytes);
-  const submitArgs = buildSubmitPqcApprovalArgs(KEY_ID, taskId, PARTY_INDEX, approvalHash);
-  if (!await submitAndWait(partisia, 0x76, submitArgs, `submit_pqc_approval_P${PARTY_INDEX}`)) {
-    throw new Error("submit_pqc_approval failed");
-  }
-  await post(`onchain_pqc_approval_${KEY_ID}_${taskId}_${PARTY_INDEX}`, "1");
+  await post(`pqc_approval_hash_${KEY_ID}_${taskId}_${PARTY_INDEX}`, toHex(approvalHash));
 
-  for (const sender of signingSubset) {
-    await read(`onchain_pqc_approval_${KEY_ID}_${taskId}_${sender}`);
-  }
-
-  if (PARTY_INDEX === 1) {
+  if (IS_RELAYER) {
+    for (const sender of signingSubset) {
+      const hashHex = await read(`pqc_approval_hash_${KEY_ID}_${taskId}_${sender}`);
+      const submitArgs = buildSubmitPqcApprovalArgs(KEY_ID, taskId, sender, hexToBytes(hashHex));
+      if (!await submitAndWait(partisia, 0x76, submitArgs, `submit_pqc_approval_P${sender}`)) {
+        throw new Error(`submit_pqc_approval failed for party ${sender}`);
+      }
+      await post(`onchain_pqc_approval_${KEY_ID}_${taskId}_${sender}`, "1");
+    }
     const finalizeArgs = buildFinalizePqcApprovalArgs(KEY_ID, taskId);
     if (!await submitAndWait(partisia, 0x77, finalizeArgs, "finalize_pqc_approval")) {
       throw new Error("finalize_pqc_approval failed");
@@ -516,6 +601,29 @@ async function phasePqcApprovals(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+async function submitZkShareHalfWithRetry(
+  partisia: PartisiaClient,
+  zkClient: ReturnType<typeof createZkClient>,
+  keyId: number,
+  shareIndex: number,
+  isHighHalf: boolean,
+  halfBytes: Uint8Array,
+): Promise<void> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      await submitZkShareHalf(partisia, zkClient, SIGNER_ADDR, keyId, shareIndex, isHighHalf, halfBytes);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 4) break;
+      console.warn(`  [P${PARTY_INDEX}] zk_share_${isHighHalf ? "high" : "low"} retry (${attempt}/4)`);
+      await sleep(4000 * attempt);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "submitZkShareHalfWithRetry failed"));
 }
 
 function submitAndWait(
@@ -648,33 +756,65 @@ async function phase3_onchainDkg(
   }
   await sleep(2000);
 
-  // --- Step 2: Each party submits their commit (with Schnorr proof) ---
   const schnorrProof = await generateSchnorrProof(dkgShare.secretScalar, dkgShare.C_i0, PARTY_INDEX);
-  if (!await submitAndWait(partisia, 0x21,
-    buildDkgCommitArgs(KEY_ID, PARTY_INDEX, dkgShare.commitmentHash, dkgShare.C_i1, schnorrProof.R, schnorrProof.z),
-    `dkg_commit_P${PARTY_INDEX}`)) {
-    throw new Error("dkg_commit failed");
-  }
-  await post(`onchain_commit_${PARTY_INDEX}`, "done");
-
-  // Wait for all parties to commit
-  for (let j = 1; j <= NUM_PARTIES; j++) {
-    await read(`onchain_commit_${j}`);
+  await postJson(`chain_dkg_commit_${KEY_ID}_${PARTY_INDEX}`, {
+    partyIndex: PARTY_INDEX,
+    commitmentHash: toHex(dkgShare.commitmentHash),
+    slopeCommitment: toHex(dkgShare.C_i1),
+    schnorrR: toHex(schnorrProof.R),
+    schnorrZ: toHex(schnorrProof.z),
+  });
+  if (IS_RELAYER) {
+    for (let j = 1; j <= NUM_PARTIES; j++) {
+      const commit = await readJson<{
+        partyIndex: number;
+        commitmentHash: string;
+        slopeCommitment: string;
+        schnorrR: string;
+        schnorrZ: string;
+      }>(`chain_dkg_commit_${KEY_ID}_${j}`);
+      if (!await submitAndWait(
+        partisia,
+        0x21,
+        buildDkgCommitArgs(
+          KEY_ID,
+          commit.partyIndex,
+          hexToBytes(commit.commitmentHash),
+          hexToBytes(commit.slopeCommitment),
+          hexToBytes(commit.schnorrR),
+          hexToBytes(commit.schnorrZ),
+        ),
+        `dkg_commit_P${commit.partyIndex}`,
+      )) {
+        throw new Error(`dkg_commit failed for party ${commit.partyIndex}`);
+      }
+    }
+    await post(`onchain_commit_all_${KEY_ID}`, "done");
+  } else {
+    await read(`onchain_commit_all_${KEY_ID}`);
   }
   console.log(`  [P${PARTY_INDEX}] All parties committed on-chain`);
   await sleep(2000);
 
-  // --- Step 3: Each party submits their reveal ---
-  if (!await submitAndWait(partisia, 0x22,
-    buildDkgRevealArgs(KEY_ID, PARTY_INDEX, dkgShare.publicKeyShare),
-    `dkg_reveal_P${PARTY_INDEX}`)) {
-    throw new Error("dkg_reveal failed");
-  }
-  await post(`onchain_reveal_${PARTY_INDEX}`, "done");
-
-  // Wait for all reveals
-  for (let j = 1; j <= NUM_PARTIES; j++) {
-    await read(`onchain_reveal_${j}`);
+  await postJson(`chain_dkg_reveal_${KEY_ID}_${PARTY_INDEX}`, {
+    partyIndex: PARTY_INDEX,
+    publicKeyShare: toHex(dkgShare.publicKeyShare),
+  });
+  if (IS_RELAYER) {
+    for (let j = 1; j <= NUM_PARTIES; j++) {
+      const reveal = await readJson<{ partyIndex: number; publicKeyShare: string }>(`chain_dkg_reveal_${KEY_ID}_${j}`);
+      if (!await submitAndWait(
+        partisia,
+        0x22,
+        buildDkgRevealArgs(KEY_ID, reveal.partyIndex, hexToBytes(reveal.publicKeyShare)),
+        `dkg_reveal_P${reveal.partyIndex}`,
+      )) {
+        throw new Error(`dkg_reveal failed for party ${reveal.partyIndex}`);
+      }
+    }
+    await post(`onchain_reveal_all_${KEY_ID}`, "done");
+  } else {
+    await read(`onchain_reveal_all_${KEY_ID}`);
   }
   console.log(`  [P${PARTY_INDEX}] All parties revealed on-chain`);
   await sleep(2000);
@@ -688,19 +828,26 @@ async function phase3_onchainDkg(
   } else {
     await read("onchain_finalize_done");
   }
-  await sleep(3000);
+  await sleep(10000);
 
-  // --- Step 5: Each party submits their ZK secret (Shamir share halves) ---
+  // --- Step 5: Party 1 relays all ZK secrets (Shamir share halves) ---
   const [highBytes, lowBytes] = getShamirShareHalves(shamirShare);
-  await submitZkShareHalf(partisia, zkClient, SIGNER_ADDR, KEY_ID, PARTY_INDEX, true, highBytes);
-  await sleep(3000);
-  await submitZkShareHalf(partisia, zkClient, SIGNER_ADDR, KEY_ID, PARTY_INDEX, false, lowBytes);
-  await sleep(3000);
-  await post(`onchain_zk_${PARTY_INDEX}`, "done");
-
-  // Wait for all ZK secrets
-  for (let j = 1; j <= NUM_PARTIES; j++) {
-    await read(`onchain_zk_${j}`);
+  await postJson(`zk_share_payload_${KEY_ID}_${PARTY_INDEX}`, {
+    partyIndex: PARTY_INDEX,
+    highBytes: bytesToBase64(highBytes),
+    lowBytes: bytesToBase64(lowBytes),
+  });
+  if (IS_RELAYER) {
+    for (let j = 1; j <= NUM_PARTIES; j++) {
+      const payload = await readJson<{ partyIndex: number; highBytes: string; lowBytes: string }>(`zk_share_payload_${KEY_ID}_${j}`);
+      await submitZkShareHalfWithRetry(partisia, zkClient, KEY_ID, payload.partyIndex, true, base64ToBytes(payload.highBytes));
+      await sleep(5000);
+      await submitZkShareHalfWithRetry(partisia, zkClient, KEY_ID, payload.partyIndex, false, base64ToBytes(payload.lowBytes));
+      await sleep(5000);
+    }
+    await post(`onchain_zk_all_${KEY_ID}`, "done");
+  } else {
+    await read(`onchain_zk_all_${KEY_ID}`);
   }
   console.log(`  [P${PARTY_INDEX}] All parties submitted ZK secrets`);
   await sleep(5000);
@@ -905,7 +1052,8 @@ async function phase6_onchainSigning(
   state: GG20PartyState,
   msgHash: Uint8Array,
   signingSubset: number[],
-  combinedPk: Uint8Array
+  combinedPk: Uint8Array,
+  taskId: number
 ): Promise<void> {
   console.log(`\n[P${PARTY_INDEX}] Phase 6: On-chain signing...`);
 
@@ -961,7 +1109,7 @@ async function phase6_onchainSigning(
 
   // Party 1: start signing session
   if (PARTY_INDEX === 1) {
-    const startArgs = buildGG20StartSigningArgs(KEY_ID, TASK_ID, signingSubset);
+    const startArgs = buildGG20StartSigningArgs(KEY_ID, taskId, signingSubset);
     if (!await submitAndWait(partisia, 0x50, startArgs, "gg20_start_signing")) {
       throw new Error("gg20_start_signing failed");
     }
@@ -971,20 +1119,31 @@ async function phase6_onchainSigning(
   }
   await sleep(2000);
 
-  // Submit delta
-  if (!await submitAndWait(partisia, 0x45, buildSubmitDeltaArgs(KEY_ID, PARTY_INDEX, myDeltaBytes), `delta_P${PARTY_INDEX}`)) {
-    throw new Error("submit_delta failed");
+  await post(`delta_bytes_${KEY_ID}_${PARTY_INDEX}`, toHex(myDeltaBytes));
+  if (IS_RELAYER) {
+    for (const j of signingSubset) {
+      const deltaHex = await read(`delta_bytes_${KEY_ID}_${j}`);
+      if (!await submitAndWait(partisia, 0x45, buildSubmitDeltaArgs(KEY_ID, j, hexToBytes(deltaHex)), `delta_P${j}`)) {
+        throw new Error(`submit_delta failed for party ${j}`);
+      }
+      await post(`onchain_delta_${KEY_ID}_${j}`, "done");
+    }
+  } else {
+    for (const j of signingSubset) await read(`onchain_delta_${KEY_ID}_${j}`);
   }
-  await post(`onchain_delta_${KEY_ID}_${PARTY_INDEX}`, "done");
-  for (const j of signingSubset) await read(`onchain_delta_${KEY_ID}_${j}`);
   await sleep(2000);
 
-  // Submit gamma point
-  if (!await submitAndWait(partisia, 0x46, buildSubmitGammaPointArgs(KEY_ID, PARTY_INDEX, myGammaPoint), `gamma_P${PARTY_INDEX}`)) {
-    throw new Error("submit_gamma_point failed");
+  if (IS_RELAYER) {
+    for (const j of signingSubset) {
+      const gammaHex = await read(`gamma_pt_${KEY_ID}_${j}`);
+      if (!await submitAndWait(partisia, 0x46, buildSubmitGammaPointArgs(KEY_ID, j, hexToBytes(gammaHex)), `gamma_P${j}`)) {
+        throw new Error(`submit_gamma_point failed for party ${j}`);
+      }
+      await post(`onchain_gamma_${KEY_ID}_${j}`, "done");
+    }
+  } else {
+    for (const j of signingSubset) await read(`onchain_gamma_${KEY_ID}_${j}`);
   }
-  await post(`onchain_gamma_${KEY_ID}_${PARTY_INDEX}`, "done");
-  for (const j of signingSubset) await read(`onchain_gamma_${KEY_ID}_${j}`);
   await sleep(2000);
 
   // Party 1: finalize R
@@ -998,21 +1157,33 @@ async function phase6_onchainSigning(
   }
   await sleep(2000);
 
-  // Commit partial sig
   const commitHash = await gg20Sha256(sBytes);
-  if (!await submitAndWait(partisia, 0x44, buildCommitPartialSigArgs(KEY_ID, PARTY_INDEX, commitHash), `commit_sig_P${PARTY_INDEX}`)) {
-    throw new Error("commit_partial_sig failed");
+  await post(`partial_sig_commit_${KEY_ID}_${PARTY_INDEX}`, toHex(commitHash));
+  if (IS_RELAYER) {
+    for (const j of signingSubset) {
+      const commitHex = await read(`partial_sig_commit_${KEY_ID}_${j}`);
+      if (!await submitAndWait(partisia, 0x44, buildCommitPartialSigArgs(KEY_ID, j, hexToBytes(commitHex)), `commit_sig_P${j}`)) {
+        throw new Error(`commit_partial_sig failed for party ${j}`);
+      }
+      await post(`onchain_commit_sig_${KEY_ID}_${j}`, "done");
+    }
+  } else {
+    for (const j of signingSubset) await read(`onchain_commit_sig_${KEY_ID}_${j}`);
   }
-  await post(`onchain_commit_sig_${KEY_ID}_${PARTY_INDEX}`, "done");
-  for (const j of signingSubset) await read(`onchain_commit_sig_${KEY_ID}_${j}`);
   await sleep(2000);
 
-  // Reveal partial sig
-  if (!await submitAndWait(partisia, 0x31, buildSubmitPartialSigArgs(KEY_ID, PARTY_INDEX, sBytes), `partial_sig_P${PARTY_INDEX}`)) {
-    throw new Error("submit_partial_sig failed");
+  await post(`partial_sig_bytes_${KEY_ID}_${PARTY_INDEX}`, toHex(sBytes));
+  if (IS_RELAYER) {
+    for (const j of signingSubset) {
+      const sigHex = await read(`partial_sig_bytes_${KEY_ID}_${j}`);
+      if (!await submitAndWait(partisia, 0x31, buildSubmitPartialSigArgs(KEY_ID, j, hexToBytes(sigHex)), `partial_sig_P${j}`)) {
+        throw new Error(`submit_partial_sig failed for party ${j}`);
+      }
+      await post(`onchain_reveal_sig_${KEY_ID}_${j}`, "done");
+    }
+  } else {
+    for (const j of signingSubset) await read(`onchain_reveal_sig_${KEY_ID}_${j}`);
   }
-  await post(`onchain_reveal_sig_${KEY_ID}_${PARTY_INDEX}`, "done");
-  for (const j of signingSubset) await read(`onchain_reveal_sig_${KEY_ID}_${j}`);
 
   // Local verification (redundant but good sanity check)
   if (PARTY_INDEX === 1) {
@@ -1055,23 +1226,42 @@ async function main() {
     console.log(`  Party ${PARTY_INDEX} is NOT in signing subset {${SIGNING_SUBSET.join(",")}} — will participate in DKG only.`);
   }
 
-  // --- Phase 1: DKG polynomial generation ---
-  const { dkgShare } = await phase1_dkgGenerate();
+  let shamirShare: ShamirShare;
+  let combinedPk: Uint8Array;
+  // taskId tracks which signing slot this session maps to on-chain.
+  // On fresh DKG: starts at 0. On reuse: loaded from share file (incremented after each signing).
+  let sessionTaskId: number;
 
-  // --- Phase 2: Collect + verify sub-shares ---
-  const shamirShare = await phase2_collectShares(dkgShare);
+  if (REUSE_EXISTING_KEY) {
+    const persisted = loadPersistedShare();
+    if (!persisted) throw new Error("REUSE_EXISTING_KEY=1 requires SHARE_FILE with a persisted Shamir share");
+    ({ shamirShare, combinedPk, nextTaskId: sessionTaskId } = persisted);
+    console.log(`  [P${PARTY_INDEX}] Reusing existing key ${KEY_ID} from persisted share storage (task_id=${sessionTaskId})`);
+    if (!inSigningSubset) {
+      console.log(`\n  [P${PARTY_INDEX}] Reuse mode: party ${PARTY_INDEX} is not needed for signing subset {${SIGNING_SUBSET.join(",")}}.`);
+      return;
+    }
+  } else {
+    // --- Phase 1: DKG polynomial generation ---
+    const { dkgShare } = await phase1_dkgGenerate();
 
-  // --- Phase 3: On-chain DKG ceremony ---
-  const combinedPk = await phase3_onchainDkg(partisia, dkgShare, shamirShare);
+    // --- Phase 2: Collect + verify sub-shares ---
+    shamirShare = await phase2_collectShares(dkgShare);
 
-  // Every DKG party still needs to register its on-chain identity and PQC keys.
-  // Signing subset members continue into Paillier/MtA; non-signers stop after identity setup.
-  await phaseRegisterOnchainIdentity(partisia);
+    // --- Phase 3: On-chain DKG ceremony ---
+    combinedPk = await phase3_onchainDkg(partisia, dkgShare, shamirShare);
+    sessionTaskId = 0; // first signing session after DKG is always task 0
+    persistShare(shamirShare, combinedPk, 0);
 
-  if (!inSigningSubset) {
-    console.log(`\n  [P${PARTY_INDEX}] DKG complete. Party ${PARTY_INDEX} is offline for signing.`);
-    console.log(`  [P${PARTY_INDEX}] The signing parties {${SIGNING_SUBSET.join(",")}} will proceed.`);
-    return;
+    // Every DKG party still needs to register its on-chain identity and PQC keys.
+    // Signing subset members continue into Paillier/MtA; non-signers stop after identity setup.
+    await phaseRegisterOnchainIdentity(partisia);
+
+    if (!inSigningSubset) {
+      console.log(`\n  [P${PARTY_INDEX}] DKG complete. Party ${PARTY_INDEX} is offline for signing.`);
+      console.log(`  [P${PARTY_INDEX}] The signing parties {${SIGNING_SUBSET.join(",")}} will proceed.`);
+      return;
+    }
   }
 
   // --- Phase 4: Paillier key setup ---
@@ -1083,12 +1273,14 @@ async function main() {
   }
   console.log(`  [P${PARTY_INDEX}] All signing parties have Paillier keys`);
 
-  // --- Party 1 posts the message to sign ---
+  // --- Party 1 posts the message + task ID to sign ---
+  // Party 1 coordinates the task ID because it calls sign_message which creates the task slot.
   let msgHash: Uint8Array;
   if (PARTY_INDEX === 1) {
     const rawHash = new Uint8Array(32);
     globalThis.crypto.getRandomValues(rawHash);
     await post(`msg_to_sign_${KEY_ID}`, Buffer.from(rawHash).toString("hex"));
+    await post(`task_id_for_key_${KEY_ID}`, String(sessionTaskId));
 
     // Queue signing on contract (include TX_TAG so contract can enforce policy)
     const signArgs = buildSignMessageWithTagArgs(KEY_ID, rawHash, TX_TAG);
@@ -1097,16 +1289,18 @@ async function main() {
     }
     await post(`onchain_sign_queued_${KEY_ID}`, "1");
     msgHash = rawHash;
-    console.log(`  [P${PARTY_INDEX}] Posted message to sign: ${Buffer.from(rawHash).toString("hex").slice(0, 16)}...`);
+    console.log(`  [P${PARTY_INDEX}] Posted message to sign: ${Buffer.from(rawHash).toString("hex").slice(0, 16)}... (task_id=${sessionTaskId})`);
   } else {
     await read(`onchain_sign_queued_${KEY_ID}`);
     const hashHex = await read(`msg_to_sign_${KEY_ID}`);
     msgHash = hexToBytes(hashHex);
-    console.log(`  [P${PARTY_INDEX}] Got message to sign: ${hashHex.slice(0, 16)}...`);
+    // Non-Party-1 parties read the task ID posted by Party 1
+    sessionTaskId = parseInt(await read(`task_id_for_key_${KEY_ID}`));
+    console.log(`  [P${PARTY_INDEX}] Got message to sign: ${hashHex.slice(0, 16)}... (task_id=${sessionTaskId})`);
   }
 
   // --- PQC approvals (Kyber transport + Dilithium signatures) ---
-  await phasePqcApprovals(partisia, msgHash, SIGNING_SUBSET, TASK_ID);
+  await phasePqcApprovals(partisia, msgHash, SIGNING_SUBSET, sessionTaskId);
 
   // --- Initialize GG20 party state ---
   const adjustedShare = computeAdjustedShare(shamirShare, SIGNING_SUBSET);
@@ -1124,12 +1318,16 @@ async function main() {
   await phase5_distributedMtA(state, adjustedShare, SIGNING_SUBSET);
 
   // --- Phase 6: On-chain signing ---
-  await phase6_onchainSigning(partisia, state, msgHash, SIGNING_SUBSET, combinedPk);
+  await phase6_onchainSigning(partisia, state, msgHash, SIGNING_SUBSET, combinedPk, sessionTaskId);
+
+  // Advance the task counter in the share file so the next reuse gets the right task_id.
+  advanceShareTaskId();
 
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  PARTY ${PARTY_INDEX} — COMPLETE`);
   console.log(`${"=".repeat(60)}`);
   console.log(`  Key ID:          ${KEY_ID}`);
+  console.log(`  Task ID used:    ${sessionTaskId}`);
   console.log(`  Signing subset:  {${SIGNING_SUBSET.join(",")}}`);
   console.log(`  Combined pubkey: ${toHex(combinedPk)}`);
   console.log(`  No coordinator. No seed phrase. No assembled private key.`);
