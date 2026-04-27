@@ -1,0 +1,119 @@
+
+  Kosh ZK Signer — Party 1 of 3
+  Coordination server: http://localhost:3099
+  Signing subset:      {1,2}
+  Transaction tag:     (none — any 2-of-3 allowed)
+  Key ID:              60004
+
+
+[P1] Phase 1: Generating DKG polynomial...
+  [P1] Posted DKG commit (C_i0, C_i1, Schnorr proof)
+  [P1] Posted 3 sub-shares
+
+[P1] Phase 2: Collecting sub-shares from other parties...
+  [P1] Got commit from Party 2
+  [P1] Got commit from Party 3
+  [P1] Verified sub-share from Party 1: OK
+  [P1] Verified sub-share from Party 2: OK
+  [P1] Verified sub-share from Party 3: OK
+  [P1] Shamir share X_1 = ...fcdee2e3
+
+[P1] Phase 3: On-chain DKG ceremony...
+  [P1] Tx: 6ac083c79e921ce581b620c289669ee63d1739a429223d26c3b510b217ebfe8b
+  [P1] dkg_create_key OK
+  [P1] Tx: e0c0d7c61a10b69a1212a7333ee2aebe1e511c1fa0d01331d15fe9e78b286cb3
+  [P1] dkg_commit_P1 OK
+  [P1] Tx: a8d66afeb6d9f9c67c2ff06c0b95b7113c2dad8f6e2ce3a42474da99945b5d76
+  [P1] dkg_commit_P2 OK
+  [P1] Tx: 014b65a4abb27afb96ed287e82ace886f93322bff89efee4490ab55afd3b94d7
+  [P1] dkg_commit_P3 OK
+  [P1] All parties committed on-chain
+  [P1] Tx: 4032d00c1e09885666a1c900e9f22b3c42488c4760976a4c3eb6b3edb2bd9cfd
+  [P1] dkg_reveal_P1 OK
+  [P1] Tx: d6578bf370ae2cb5a9b9f0972f8966dd19456ee4199b71a63e61a9eef0c5fcf3
+  [P1] dkg_reveal_P2 OK
+  [P1] Tx: b4eb9a1634a2d318df4d371dbce58e0c767846ca0fdb6446cd79aa4bacba6c91
+  [P1] dkg_reveal_P3 OK
+  [P1] All parties revealed on-chain
+  [P1] Tx: 25d778f9c7ff7735c494bd6924b9d8ce4f8fbd51e705258cce7e74467bef60a6
+  [P1] dkg_finalize OK
+  [P1] All parties submitted ZK secrets
+  [P1] Tx: 785dd89a17fd6878dd17e2e31d50e0ff4e6048b41d116ded9eb90bbf74fcc771
+  [P1] dkg_complete_keygen OK
+  [P1] Combined public key: 026773160817a77fc23eca37599b22832c9453dd89833f3c8655ea93587e40e5e3
+  [P1] Tx: 8da0dc288fcba953fce0dc442b12efa2ec1a3fd9748bdac28f74ffc4ff73f0cd
+  [P1] register_party_address_P1 OK
+  [P1] Tx: 1d5a19303271020f7f127298000de87b26512216ad07c361c5689b3cef4c36ae
+  [P1] register_dilithium_pubkey_P1 OK
+  [P1] Tx: 97139e0cb77d20f281a8ffc748a72614a75b4476f06af823a396f903f236c108
+  [P1] register_kyber_pubkey_P1 OK
+  [P1] Tx: 128fb9c792554740e36cdfb1ff4acd117e5d7afd21189fffecf013146792b683
+  [P1] register_party_address_P2 OK
+  [P1] Tx: 88d8cd261486456e7efa8879b1872ff141d86167c1373136800c391c49035144
+  [P1] register_dilithium_pubkey_P2 OK
+  [P1] Tx: ef6ec9a218cf9c5e409ea55a927cc2e697436cc5b06fb571d3500943e78822fa
+  [P1] register_kyber_pubkey_P2 OK
+  [P1] Tx: d004f725c5d298052a923af62668bf7a53896616836bf58516d5259a2d5f29a5
+  [P1] register_party_address_P3 OK
+  [P1] Tx: e3db6924410c490fb6ad2efb3126f3873f796c5af510bc347622f902fb1663cf
+  [P1] register_dilithium_pubkey_P3 OK
+  [P1] Tx: 9620e65ff936f427dadc136b24056ea406c113ab6f8b1695dd249df43fb79c60
+  [P1] register_kyber_pubkey_P3 OK
+
+[P1] Phase 4: Generating Paillier key pair...
+  [P1] Posted Paillier public key
+  [P1] All signing parties have Paillier keys
+  [P1] Tx: 83a374db3e28c06fea06f09b3b42063881c642255f535212d4ae346000047021
+  [P1] sign_message OK
+  [P1] Posted message to sign: 99a940ffe2433466... (task_id=0)
+  [P1] Tx: b59326264e38f43b4b6bfedd80c0480fcb6b0daad647cac2e5db79aed4af75b8
+  [P1] start_pqc_approval_session OK
+  [P1] Tx: 6ad473a6fb8a0065734b51d8bf11a6e2b58a669cdf3f836348ba17eb097deaea
+  [P1] submit_pqc_approval_P1 OK
+  [P1] Tx: fdb720ae55c1a59595c02a9504cadb9d1c2d1326daa26a352a19f66360e4ce10
+  [P1] submit_pqc_approval_P2 OK
+  [P1] Tx: 69cd063f6cd2324fd5060835957cee863c63a4c53daf4baa8432b97043670395
+  [P1] finalize_pqc_approval OK
+  [P1] PQC approvals verified for subset {1,2}
+  [P1] Lagrange-adjusted share x̃_1 = ...29878485
+
+[P1] Phase 5: Distributed MtA rounds...
+  [P1] MtA (A side) with Party 2: done
+  [P1] MtA (B side) with Party 2: done
+  [P1] MtA complete. delta_i = ...986969e6
+
+[P1] Phase 6: On-chain signing...
+  [P1] r = ...44dc1c6b
+  [P1] s_1 = ...a1dbb1ca
+  [P1] Tx: 0d789d49e5615f907c3288ae1a2eec45164a80f81cf48c02b9a9a0f149a82e03
+  [P1] gg20_start_signing OK
+  [P1] Tx: 97decab368573db1d7069da9a9fba5b1fa4d3fbd635ae0cec463728f01ed6842
+  [P1] delta_P1 OK
+  [P1] Tx: 34ad17968a1aa361baf7d4d2d1d0857a4e98ae3bc433f86749f3fc2a8a96e601
+  [P1] delta_P2 OK
+  [P1] Tx: e013c82e6660d52e382f29c5ada63dffbb05c1b2bea721bf9828b68b35cb3d8e
+  [P1] gamma_P1 OK
+  [P1] Tx: dfd1f0dd475437b4a222f8ac6deb235221210af5ac9e1c0d306c124a44987670
+  [P1] gamma_P2 OK
+  [P1] Tx: dd3f1edc7abd93cd402ff9b6859cd25d05f18231dd3f46b75b2c2a56cf92a818
+  [P1] gg20_finalize_r OK
+  [P1] Tx: 3875a66cdb23c2b945524bb62654fb621a505c18fcfe74d051de38041cde2c2d
+  [P1] commit_sig_P1 OK
+  [P1] Tx: 0b454f57e53e3bdd0e63f45ff87f220abd525e7b61d3a2aa0f66ac649f1d34b9
+  [P1] commit_sig_P2 OK
+  [P1] Tx: d6375f7ac2ab0eac78578ba44986eed77fc7b5038288ab616f7e90d483c8111a
+  [P1] partial_sig_P1 OK
+  [P1] Tx: 934de17ac6b079ff8d501368d0187de62abf5dc17ace11840161d4c8c68e4d7f
+  [P1] partial_sig_P2 OK
+
+  [P1] On-chain contract will verify combined signature
+  [P1] If all partial sigs submitted, contract will PASS
+
+============================================================
+  PARTY 1 — COMPLETE
+============================================================
+  Key ID:          60004
+  Task ID used:    0
+  Signing subset:  {1,2}
+  Combined pubkey: 026773160817a77fc23eca37599b22832c9453dd89833f3c8655ea93587e40e5e3
+  No coordinator. No seed phrase. No assembled private key.

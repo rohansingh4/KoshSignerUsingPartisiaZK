@@ -106,13 +106,22 @@ export async function submitZkShareHalf(
   const additionalRpc = buildShareAdditionalRpc(keyId, shareIndex, isHighHalf);
   const senderAddress = partisia.getSenderAddress();
 
-  const tx = await zkClient.buildOnChainInputTransaction(
-    senderAddress,
-    secretBits,
-    additionalRpc
-  );
-
-  return partisia.submitTransaction(tx);
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const tx = await zkClient.buildOnChainInputTransaction(
+        senderAddress,
+        secretBits,
+        additionalRpc
+      );
+      return await partisia.submitTransaction(tx);
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 3) break;
+      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "submitZkShareHalf failed"));
 }
 
 // -- k⁻¹ ZK secret input helpers (for ZK partial sig path) --

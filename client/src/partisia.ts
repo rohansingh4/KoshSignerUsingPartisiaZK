@@ -45,6 +45,10 @@ export class PartisiaClient {
     return this._txClient;
   }
 
+  resetTransactionClient(): void {
+    this._txClient = undefined;
+  }
+
   /** Get the sender address. */
   getSenderAddress(): string {
     return this.senderAddress;
@@ -60,10 +64,21 @@ export class PartisiaClient {
    * Returns the transaction hash.
    */
   async submitTransaction(tx: PbcTransaction, gasCost = 1_000_000): Promise<string> {
-    const client = this.getTransactionClient();
-    const signed = await client.sign(tx, gasCost);
-    const sent = await client.send(signed);
-    return sent.transactionPointer.identifier;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        if (attempt > 1) this.resetTransactionClient();
+        const client = this.getTransactionClient();
+        const signed = await client.sign(tx, gasCost);
+        const sent = await client.send(signed);
+        return sent.transactionPointer.identifier;
+      } catch (err) {
+        lastErr = err;
+        if (attempt === 5) break;
+        await new Promise((resolve) => setTimeout(resolve, 3000 * attempt));
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "submitTransaction failed"));
   }
 
   /**

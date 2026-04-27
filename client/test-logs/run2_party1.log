@@ -1,0 +1,66 @@
+
+  Kosh ZK Signer — Party 1 of 3
+  Coordination server: http://localhost:3099
+  Signing subset:      {1,2}
+  Transaction tag:     (none — any 2-of-3 allowed)
+  Key ID:              60004
+
+  [P1] Reusing existing key 60004 from persisted share storage (task_id=1)
+
+[P1] Phase 4: Generating Paillier key pair...
+  [P1] Posted Paillier public key
+  [P1] All signing parties have Paillier keys
+  [P1] Tx: 8f4e452c5bb2b6aba75031713eff57bc68473ed3331c5010707c49149c3bb2cb
+  [P1] sign_message OK
+  [P1] Posted message to sign: 10d1b6af2e83b172... (task_id=1)
+  [P1] Tx: 35ae9be04e0488d709da75b2972390c886755bf14ef872307b699924d116c4cf
+  [P1] start_pqc_approval_session OK
+  [P1] Tx: d97d884d359ca10f93f64da9329a08dde1e6976747efd139b6cbc6f44fce8ebd
+  [P1] submit_pqc_approval_P1 OK
+  [P1] Tx: 6c363773bb272882b105898d5b19d977cfc2be1b238e9af8be324bf600636402
+  [P1] submit_pqc_approval_P2 OK
+  [P1] Tx: cfeba249a4e4c979aac3838439c1c9ec1be9879c025942f00f0c93829a99514e
+  [P1] finalize_pqc_approval OK
+  [P1] PQC approvals verified for subset {1,2}
+  [P1] Lagrange-adjusted share x̃_1 = ...29878485
+
+[P1] Phase 5: Distributed MtA rounds...
+  [P1] MtA (A side) with Party 2: done
+  [P1] MtA (B side) with Party 2: done
+  [P1] MtA complete. delta_i = ...52a8d2e2
+
+[P1] Phase 6: On-chain signing...
+  [P1] r = ...bd0aad8d
+  [P1] s_1 = ...63a058c9
+  [P1] Tx: f5dbc0498fca7a6004e8a05bcd7c9d5ac2bbc5475dad8499fad3efdbae2cea20
+  [P1] gg20_start_signing OK
+  [P1] Tx: be8e1f3181f3e7591740e0d9ddfdc763cb6a48ddb38c5583ec0964831aef6756
+  [P1] delta_P1 OK
+  [P1] Tx: e93913b40e7a9d3d97fa1d8e64d713e9a1f435ff9a84fe070f4a9f3c5174297f
+  [P1] delta_P2 OK
+  [P1] Tx: 3fed07bb195ceafd26dfa2cf42b1be75e2f3de4954dbf27983163d64b9423714
+  [P1] gamma_P1 OK
+  [P1] Tx: 03a049dfca6616ddebecece4bcdaff459acea6064d79df96f084e1fb898cd530
+  [P1] gamma_P2 OK
+  [P1] Tx: 5ab3e9d9dc001d1d607464a0b3af2cfb55c931bb2d377cd60df1bb8ff34bba4f
+  [P1] gg20_finalize_r OK
+  [P1] Tx: 6892ef76bc7e88297010939f10b175f647df7866f04cfa9fab9999bffaa31eb6
+  [P1] commit_sig_P1 OK
+  [P1] Tx: 94299b77a95489e62759020636b9bd7c007438b7e2a154a594f087628c77e8d6
+  [P1] commit_sig_P2 OK
+  [P1] Tx: 9ddc73a0c407dd3dd690cdfa07b70d9beb948f74631254b51e318be83a720c73
+  [P1] partial_sig_P1 OK
+  [P1] Tx: b50cf39fbfe179d653ef2ce9abba25cdfceb84a70fd083a75265fd2679bb74a2
+  [P1] partial_sig_P2 OK
+
+  [P1] On-chain contract will verify combined signature
+  [P1] If all partial sigs submitted, contract will PASS
+
+============================================================
+  PARTY 1 — COMPLETE
+============================================================
+  Key ID:          60004
+  Task ID used:    1
+  Signing subset:  {1,2}
+  Combined pubkey: 026773160817a77fc23eca37599b22832c9453dd89833f3c8655ea93587e40e5e3
+  No coordinator. No seed phrase. No assembled private key.

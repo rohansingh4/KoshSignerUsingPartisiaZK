@@ -30,7 +30,7 @@ export function concatBytes(...chunks: Uint8Array[]): Uint8Array {
 
 /**
  * Submit a WASM action transaction and wait for it to fully settle on-chain.
- * Retries up to 3 times on transient RPC failures. Returns true on success,
+ * Retries up to 7 times on transient RPC failures. Returns true on success,
  * false on contract-level failure (prints the error message).
  *
  * @param logPrefix  Optional prefix for log lines, e.g. "[P1] "
@@ -43,16 +43,19 @@ export async function submitAndWait(
   label: string,
   logPrefix = "",
 ): Promise<boolean> {
-  const client = partisia.getTransactionClient();
   const shortnameBytes = shortname <= 0xff ? [shortname] : [shortname >> 8, shortname & 0xff];
   const wasmRpc = Buffer.from([...shortnameBytes, ...args]);
   const rpc = Buffer.concat([Buffer.from([0x09]), wasmRpc]);
   const tx = { address: contractAddress, rpc };
-  let sent: Awaited<ReturnType<typeof client.signAndSend>> | undefined;
-  let tree: Awaited<ReturnType<typeof client.waitForSpawnedEvents>> | undefined;
+  let sent: Awaited<ReturnType<ReturnType<typeof partisia.getTransactionClient>["signAndSend"]>> | undefined;
+  let tree: Awaited<ReturnType<ReturnType<typeof partisia.getTransactionClient>["waitForSpawnedEvents"]>> | undefined;
   let lastErr: unknown;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= 7; attempt++) {
     try {
+      if (attempt > 1) {
+        partisia.resetTransactionClient();
+      }
+      const client = partisia.getTransactionClient();
       sent = await client.signAndSend(tx, 500000);
       const txId = sent.transactionPointer.identifier;
       console.log(`  ${logPrefix}Tx: ${txId}${attempt > 1 ? ` (attempt ${attempt})` : ""}`);
@@ -60,9 +63,9 @@ export async function submitAndWait(
       break;
     } catch (err) {
       lastErr = err;
-      if (attempt === 3) throw err;
-      console.warn(`  ${logPrefix}${label}: transient Partisia RPC failure, retrying (${attempt}/3)`);
-      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+      if (attempt === 7) throw err;
+      console.warn(`  ${logPrefix}${label}: transient Partisia RPC failure, retrying (${attempt}/7)`);
+      await new Promise((resolve) => setTimeout(resolve, 5000 * attempt));
     }
   }
   if (!tree) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "unknown Partisia RPC error"));
