@@ -172,7 +172,6 @@ pub struct ZkKeyState {
     pub opened_shares: Vec<OpenedShare>,
 
     // --- DKG fields (flattened) ---
-
     /// Number of parties expected in the DKG ceremony.
     pub dkg_num_parties: u8,
     /// DKG commitment party indices (parallel with dkg_commitment_hashes).
@@ -187,7 +186,6 @@ pub struct ZkKeyState {
     pub dkg_reveal_pubkeys: Vec<Vec<u8>>,
 
     // --- Threshold signing fields (flattened) ---
-
     /// Whether a threshold signing session is active.
     pub ts_active: bool,
     /// Threshold signing: the signing task ID.
@@ -206,7 +204,6 @@ pub struct ZkKeyState {
     pub ts_partial_values: Vec<Vec<u8>>,
 
     // --- Distributed nonce ceremony fields (flattened) ---
-
     /// Nonce ceremony: number of parties expected to contribute.
     pub nc_num_parties: u8,
     /// Nonce ceremony: which party index is coordinator this round (rotated).
@@ -221,7 +218,6 @@ pub struct ZkKeyState {
     pub nc_reveal_points: Vec<Vec<u8>>,
 
     // --- Partial signature commitment fields (flattened) ---
-
     /// Partial commitment: party indices that have committed hash(σ_i).
     pub ps_commit_indices: Vec<u8>,
     /// Partial commitment: SHA-256 hashes of partial signatures.
@@ -231,7 +227,6 @@ pub struct ZkKeyState {
     pub signing_round: u32,
 
     // --- GG20 fields (fully trustless signing) ---
-
     /// GG20: delta values δ_i submitted by each party (32 bytes each).
     pub gg20_delta_indices: Vec<u8>,
     /// GG20: delta values (parallel with gg20_delta_indices).
@@ -261,7 +256,6 @@ pub struct ZkKeyState {
     pub gg20_delta_zk_expected: u32,
 
     // --- Timeout / Abort fields ---
-
     /// Block number by which the current signing round must complete.
     /// After this block, anyone can call abort to reset the signing state.
     pub signing_deadline_block: i64,
@@ -269,12 +263,10 @@ pub struct ZkKeyState {
     pub signing_timeout_blocks: i64,
 
     // --- Session isolation (Protection 5) ---
-
     /// Auto-incrementing signing session ID. Prevents nonce reuse across sessions.
     pub signing_session_id: u64,
 
     // --- Schnorr proof fields (Protection 3) ---
-
     /// DKG: slope commitments C_i1 = a_i·G (parallel with dkg_commit_indices).
     pub dkg_slope_commitments: Vec<Vec<u8>>,
     /// DKG: Schnorr proof R points (parallel with dkg_commit_indices).
@@ -283,7 +275,6 @@ pub struct ZkKeyState {
     pub dkg_schnorr_z_values: Vec<Vec<u8>>,
 
     // --- Paillier key registration (Protection 2) ---
-
     /// Party indices that have registered Paillier keys.
     pub paillier_key_indices: Vec<u8>,
     /// Paillier public key modulus N for each registered party (256+ bytes each).
@@ -292,7 +283,6 @@ pub struct ZkKeyState {
     pub paillier_proof_commitments: Vec<Vec<u8>>,
 
     // --- Identifiable abort / blame protocol (Protection 4) ---
-
     /// Whether blame mode is active (entered when combined sig fails verification).
     pub blame_active: bool,
     /// Blame: opened k_i values from each party (32 bytes each, parallel with blame_indices).
@@ -305,7 +295,6 @@ pub struct ZkKeyState {
     pub blame_deadline_block: i64,
 
     // --- Key refresh (Protection 7) ---
-
     /// Whether a key refresh is in progress.
     pub refresh_active: bool,
     /// Refresh: slope commitment D_i1 = b_i·G from each party (parallel with refresh_indices).
@@ -313,7 +302,6 @@ pub struct ZkKeyState {
     pub refresh_slope_commitments: Vec<Vec<u8>>,
 
     // --- Key recovery (Protection 8) ---
-
     /// Whether a key recovery is in progress.
     pub recovery_active: bool,
     /// Recovery: which party was lost.
@@ -324,7 +312,6 @@ pub struct ZkKeyState {
     pub recovery_c1_commitments: Vec<Vec<u8>>,
 
     // --- Policy / RBAC (flattened — no nested Vec<CustomStruct>) ---
-
     /// Policy IDs (parallel with all other policy_* fields below).
     pub policy_ids: Vec<u32>,
     /// Policy human-readable names (UTF-8 bytes, parallel with policy_ids).
@@ -339,14 +326,12 @@ pub struct ZkKeyState {
     pub next_policy_id: u32,
 
     // --- Party address binding (flattened) ---
-
     /// Party indices that have registered wallet addresses (parallel with party_addr_values).
     pub party_addr_indices: Vec<u8>,
     /// Wallet addresses for each registered party (parallel with party_addr_indices).
     pub party_addr_values: Vec<Address>,
 
     // --- GG20 active signing parties ---
-
     /// Party indices participating in the current GG20 signing session.
     /// Set by gg20_start_signing. Used to validate submissions.
     pub gg20_signing_parties: Vec<u8>,
@@ -360,7 +345,6 @@ pub struct ZkKeyState {
     pub gg20_min_signers: u8,
 
     // --- PQC approval session (contract-authoritative approval gate) ---
-
     /// Whether a PQC approval session is active.
     pub pqc_approval_active: bool,
     /// Whether the active PQC approval session has been finalized.
@@ -387,7 +371,6 @@ pub struct ZkKeyState {
     pub pqc_approval_received_hashes: Vec<Vec<u8>>,
 
     // --- ZK partial signature computation (on ZK nodes) ---
-
     /// Whether a ZK partial sig session is active.
     pub zk_psig_active: bool,
     /// ZK variable IDs for k⁻¹ halves submitted via submit_kinv_zk (0x53).
@@ -405,7 +388,6 @@ pub struct ZkKeyState {
     pub zk_psig_result_lo_bytes: Vec<Vec<u8>>,
 
     // --- PQC public key registry (quantum-safe identity) ---
-
     /// Party indices that have registered Dilithium (ML-DSA-65) public keys.
     pub dilithium_pubkey_indices: Vec<u8>,
     /// Dilithium public keys (1952 bytes each for ML-DSA-65, parallel with indices).

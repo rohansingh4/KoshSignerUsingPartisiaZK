@@ -1,5 +1,10 @@
 import { PartisiaClient } from "./partisia.js";
 
+function formatUnknownError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err ?? "unknown error");
+}
+
 export function encodeU32Be(n: number): Uint8Array {
   const buf = new Uint8Array(4);
   buf[0] = (n >>> 24) & 0xff;
@@ -52,9 +57,7 @@ export async function submitAndWait(
   let lastErr: unknown;
   for (let attempt = 1; attempt <= 7; attempt++) {
     try {
-      if (attempt > 1) {
-        partisia.resetTransactionClient();
-      }
+      if (attempt > 1) partisia.advanceNode();
       const client = partisia.getTransactionClient();
       sent = await client.signAndSend(tx, 500000);
       const txId = sent.transactionPointer.identifier;
@@ -64,7 +67,9 @@ export async function submitAndWait(
     } catch (err) {
       lastErr = err;
       if (attempt === 7) throw err;
-      console.warn(`  ${logPrefix}${label}: transient Partisia RPC failure, retrying (${attempt}/7)`);
+      console.warn(
+        `  ${logPrefix}${label}: transient Partisia RPC failure for sender ${partisia.getSenderAddress()} on ${partisia.getNodeUrl()} (${formatUnknownError(err)}), retrying (${attempt}/7)`
+      );
       await new Promise((resolve) => setTimeout(resolve, 5000 * attempt));
     }
   }

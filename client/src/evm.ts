@@ -9,13 +9,15 @@ import {
   encodeFunctionData,
   toHex,
 } from "viem";
-import { baseSepolia } from "viem/chains";
+import { sepolia } from "viem/chains";
 import { secp256k1 } from "@noble/curves/secp256k1";
 
-export const baseSepoliaClient = createPublicClient({
-  chain: baseSepolia,
+export const sepoliaClient = createPublicClient({
+  chain: sepolia,
   transport: http(),
 });
+
+export const baseSepoliaClient = sepoliaClient;
 
 export function pubKeyToEvmAddress(compressedPubKey: Uint8Array): Hex {
   const point = secp256k1.ProjectivePoint.fromHex(compressedPubKey);
@@ -39,9 +41,9 @@ export async function buildErc20Transfer(params: {
   const { from, tokenAddress, to, amount } = params;
 
   const [nonce, gasPrice, chainId] = await Promise.all([
-    baseSepoliaClient.getTransactionCount({ address: from }),
-    baseSepoliaClient.estimateFeesPerGas(),
-    baseSepoliaClient.getChainId(),
+    sepoliaClient.getTransactionCount({ address: from }),
+    sepoliaClient.estimateFeesPerGas(),
+    sepoliaClient.getChainId(),
   ]);
 
   const data = encodeFunctionData({
@@ -70,9 +72,9 @@ export async function buildEthTransfer(params: {
   const { from, to, value } = params;
 
   const [nonce, gasPrice, chainId] = await Promise.all([
-    baseSepoliaClient.getTransactionCount({ address: from }),
-    baseSepoliaClient.estimateFeesPerGas(),
-    baseSepoliaClient.getChainId(),
+    sepoliaClient.getTransactionCount({ address: from }),
+    sepoliaClient.estimateFeesPerGas(),
+    sepoliaClient.getChainId(),
   ]);
 
   return {
@@ -108,7 +110,7 @@ export function signTransaction(
 export async function submitSignedTransaction(
   signedTx: Hex
 ): Promise<Hex> {
-  return baseSepoliaClient.sendRawTransaction({
+  return sepoliaClient.sendRawTransaction({
     serializedTransaction: signedTx,
   });
 }

@@ -28,8 +28,7 @@ pub fn combine_public_keys(pubkeys: &[Vec<u8>]) -> Vec<u8> {
 
     let mut combined = ProjectivePoint::IDENTITY;
     for pk_bytes in pubkeys {
-        let encoded = EncodedPoint::from_bytes(pk_bytes)
-            .expect("Invalid encoded point bytes");
+        let encoded = EncodedPoint::from_bytes(pk_bytes).expect("Invalid encoded point bytes");
         let point = Option::<AffinePoint>::from(AffinePoint::from_encoded_point(&encoded))
             .expect("Failed to decompress public key share");
         combined += ProjectivePoint::from(point);
@@ -52,11 +51,18 @@ pub fn add_commitment(
     commitment_hash: Vec<u8>,
 ) -> bool {
     assert!(
-        !key_state.dkg_commit_indices.iter().any(|&idx| idx == party_index),
+        !key_state
+            .dkg_commit_indices
+            .iter()
+            .any(|&idx| idx == party_index),
         "Party {} has already committed",
         party_index
     );
-    assert_eq!(commitment_hash.len(), 32, "Commitment hash must be 32 bytes (SHA-256)");
+    assert_eq!(
+        commitment_hash.len(),
+        32,
+        "Commitment hash must be 32 bytes (SHA-256)"
+    );
 
     key_state.dkg_commit_indices.push(party_index);
     key_state.dkg_commitment_hashes.push(commitment_hash);
@@ -65,17 +71,20 @@ pub fn add_commitment(
 }
 
 /// Add a DKG reveal. Returns true if all reveals are collected.
-pub fn add_reveal(
-    key_state: &mut ZkKeyState,
-    party_index: u8,
-    public_key_share: Vec<u8>,
-) -> bool {
+pub fn add_reveal(key_state: &mut ZkKeyState, party_index: u8, public_key_share: Vec<u8>) -> bool {
     assert!(
-        !key_state.dkg_reveal_indices.iter().any(|&idx| idx == party_index),
+        !key_state
+            .dkg_reveal_indices
+            .iter()
+            .any(|&idx| idx == party_index),
         "Party {} has already revealed",
         party_index
     );
-    assert_eq!(public_key_share.len(), 33, "Public key share must be 33 bytes (compressed secp256k1)");
+    assert_eq!(
+        public_key_share.len(),
+        33,
+        "Public key share must be 33 bytes (compressed secp256k1)"
+    );
 
     // Find this party's commitment hash
     let commit_idx = key_state
@@ -91,8 +100,8 @@ pub fn add_reveal(
     );
 
     // Validate it's a real EC point
-    let encoded = EncodedPoint::from_bytes(&public_key_share)
-        .expect("Invalid encoded point format");
+    let encoded =
+        EncodedPoint::from_bytes(&public_key_share).expect("Invalid encoded point format");
     let _point = Option::<AffinePoint>::from(AffinePoint::from_encoded_point(&encoded))
         .expect("Invalid secp256k1 point");
 
@@ -210,9 +219,9 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 /// This prevents the rogue key attack where a party crafts their public key
 /// as a function of other parties' keys to control the combined key.
 pub fn verify_schnorr_proof(
-    public_key_share: &[u8],  // C_i0 = s_i * G (33 bytes compressed)
-    schnorr_r: &[u8],         // R = r * G (33 bytes compressed)
-    schnorr_z: &[u8],         // z = r + e * s_i (32 bytes scalar)
+    public_key_share: &[u8], // C_i0 = s_i * G (33 bytes compressed)
+    schnorr_r: &[u8],        // R = r * G (33 bytes compressed)
+    schnorr_z: &[u8],        // z = r + e * s_i (32 bytes scalar)
     party_index: u8,
 ) -> bool {
     use k256::{FieldBytes, Scalar};
@@ -287,10 +296,10 @@ fn parse_point(bytes: &[u8]) -> Option<ProjectivePoint> {
 ///
 /// This proves party i sent the correct sub-share without revealing s_i or a_i.
 pub fn verify_feldman_subshare(
-    subshare_bytes: &[u8],    // f_i(j) as 32-byte scalar
-    c_i0_bytes: &[u8],       // C_i0 = s_i * G (33 bytes compressed)
-    c_i1_bytes: &[u8],       // C_i1 = a_i * G (33 bytes compressed)
-    j: u8,                    // recipient party index (1-based)
+    subshare_bytes: &[u8], // f_i(j) as 32-byte scalar
+    c_i0_bytes: &[u8],     // C_i0 = s_i * G (33 bytes compressed)
+    c_i1_bytes: &[u8],     // C_i1 = a_i * G (33 bytes compressed)
+    j: u8,                 // recipient party index (1-based)
 ) -> bool {
     use k256::{FieldBytes, Scalar};
 

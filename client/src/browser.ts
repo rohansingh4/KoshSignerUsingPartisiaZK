@@ -21,12 +21,37 @@ export interface BrowserThresholdKeyStatus {
   verifiedTaskIds: number[];
 }
 
+export interface BrowserThresholdTaskSignature {
+  keyId: number;
+  taskId: number;
+  verified: boolean;
+  signatureHex: `0x${string}` | null;
+}
+
 type ContractKeyState = {
   public_key?: string | null;
   keygen_phase?: { discriminant?: number };
   signing_phase?: { discriminant?: number };
   signing_information?: Record<string, { verified?: boolean }>;
 };
+
+function readKeys(state: unknown): Record<string, ContractKeyState> {
+  const contract = state as {
+    state?: {
+      keys?: Record<string, ContractKeyState>;
+      openState?: { keys?: Record<string, ContractKeyState> };
+    };
+    keys?: Record<string, ContractKeyState>;
+    openState?: { keys?: Record<string, ContractKeyState> };
+  };
+  return (
+    contract.keys ??
+    contract.openState?.keys ??
+    contract.state?.keys ??
+    contract.state?.openState?.keys ??
+    {}
+  );
+}
 
 export async function fetchThresholdKeyStatus(
   nodeUrl: string,
@@ -38,7 +63,7 @@ export async function fetchThresholdKeyStatus(
   if (!resp.ok) throw new Error(`Failed to read state: ${resp.status}`);
   const data = await resp.json();
   const state = data.serializedContract ?? data;
-  const keys = (state.openState?.keys ?? {}) as Record<string, ContractKeyState>;
+  const keys = readKeys(state);
   const key = keys[String(keyId)];
 
   if (!key) {
@@ -71,6 +96,31 @@ export async function fetchThresholdKeyStatus(
     keygenPhaseDiscriminant: key.keygen_phase?.discriminant ?? null,
     signingPhaseDiscriminant: key.signing_phase?.discriminant ?? null,
     verifiedTaskIds,
+  };
+}
+
+export async function fetchThresholdTaskSignature(
+  nodeUrl: string,
+  signerAddress: string,
+  keyId: number,
+  taskId: number
+): Promise<BrowserThresholdTaskSignature> {
+  const url = `${nodeUrl.replace(/\/$/, "")}/shards/Shard0/blockchain/contracts/${signerAddress}?requireContractState=true`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Failed to read state: ${resp.status}`);
+  const data = await resp.json();
+  const state = data.serializedContract ?? data;
+  const keys = readKeys(state);
+  const key = keys[String(keyId)];
+  const task = key?.signing_information?.[String(taskId)] as
+    | { verified?: boolean; signature?: string | null }
+    | undefined;
+
+  return {
+    keyId,
+    taskId,
+    verified: Boolean(task?.verified),
+    signatureHex: (task?.signature ?? null) as `0x${string}` | null,
   };
 }
 

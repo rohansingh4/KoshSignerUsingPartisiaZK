@@ -23,7 +23,9 @@ use pbc_contract_common::Hash;
 use read_write_rpc_derive::ReadWriteRPC;
 use read_write_state_derive::ReadWriteState;
 
-use crate::access_control::{assert_is_account_owner, assert_is_admin, assert_is_admin_or_account_owner};
+use crate::access_control::{
+    assert_is_account_owner, assert_is_admin, assert_is_admin_or_account_owner,
+};
 
 // -- Cross-contract action shortnames --
 // These match the shortnames defined in the signer and registry contracts.
@@ -51,15 +53,7 @@ const GAS_ACTIVATE_ACCOUNT: u64 = 100_000;
 
 /// Composite key for signer callback routing.
 #[derive(
-    ReadWriteState,
-    ReadWriteRPC,
-    CreateTypeSpec,
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
+    ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone, Debug, PartialEq, Eq, PartialOrd, Ord,
 )]
 pub struct SignerKeyRef {
     pub signer: Address,
@@ -302,7 +296,8 @@ pub fn deactivate_account(
     let mut eg = EventGroup::builder();
     eg.call(
         state.registry_address,
-        pbc_contract_common::address::Shortname::from_be_bytes(REGISTRY_DEACTIVATE_ACCOUNT).unwrap(),
+        pbc_contract_common::address::Shortname::from_be_bytes(REGISTRY_DEACTIVATE_ACCOUNT)
+            .unwrap(),
     )
     .argument(account_id)
     .with_cost_from_contract(GAS_ACTIVATE_ACCOUNT)
@@ -327,11 +322,7 @@ pub fn transfer_vault_ownership(
 /// Register a signer contract so it can call callbacks.
 /// Only vault admin can register signers.
 #[action(shortname = 0x07)]
-pub fn register_signer(
-    ctx: ContractContext,
-    mut state: VaultState,
-    signer: Address,
-) -> VaultState {
+pub fn register_signer(ctx: ContractContext, mut state: VaultState, signer: Address) -> VaultState {
     assert_is_admin(&state, &ctx.sender);
     state.allowed_signers.insert(signer, true);
     state

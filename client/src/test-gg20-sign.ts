@@ -73,7 +73,7 @@ import { publicKeyToAddress } from "viem/utils";
 const SENDER_KEY = process.env.PARTISIA_SENDER_KEY ?? "";
 const SENDER_ADDR = process.env.PARTISIA_SENDER_ADDRESS ?? "";
 const SIGNER_ADDR = process.env.SIGNER_ADDRESS ?? "";
-const NODE_URL = process.env.PARTISIA_NODE_URL ?? "https://node1.testnet.partisiablockchain.com";
+const NODE_URL = process.env.PARTISIA_NODE_URL ?? "https://node4.testnet.partisiablockchain.com";
 
 if (!SENDER_KEY || !SENDER_ADDR || !SIGNER_ADDR) {
   console.error("Required: PARTISIA_SENDER_KEY, PARTISIA_SENDER_ADDRESS, SIGNER_ADDRESS");

@@ -1,5 +1,6 @@
 export { PartisiaClient, type PartisiaConfig } from "./partisia.js";
 export {
+  sepoliaClient,
   baseSepoliaClient,
   pubKeyToEvmAddress,
   buildErc20Transfer,

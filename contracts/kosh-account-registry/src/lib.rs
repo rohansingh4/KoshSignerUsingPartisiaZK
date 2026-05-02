@@ -11,8 +11,8 @@ extern crate pbc_contract_common;
 extern crate pbc_lib as _;
 
 use create_type_spec_derive::CreateTypeSpec;
-use k256::PublicKey;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::PublicKey;
 use pbc_contract_common::address::{Address, AddressType};
 use pbc_contract_common::avl_tree_map::AvlTreeMap;
 use pbc_contract_common::context::ContractContext;
@@ -120,10 +120,7 @@ fn derive_addresses(public_key: &[u8]) -> (Address, Vec<u8>) {
 /// # Arguments
 /// * `owner` - Address of the vault contract that controls this registry
 #[init]
-pub fn initialize(
-    _ctx: ContractContext,
-    owner: Address,
-) -> RegistryState {
+pub fn initialize(_ctx: ContractContext, owner: Address) -> RegistryState {
     RegistryState {
         owner,
         next_account_id: 0,
@@ -195,13 +192,13 @@ pub fn activate_account(
 ) -> RegistryState {
     state.assert_owner(&ctx.sender);
 
-    let mut account = state
-        .accounts
-        .get(&account_id)
-        .expect("Account not found");
+    let mut account = state.accounts.get(&account_id).expect("Account not found");
 
     assert!(
-        matches!(account.status, AccountStatus::Pending {} | AccountStatus::RotatingKey {}),
+        matches!(
+            account.status,
+            AccountStatus::Pending {} | AccountStatus::RotatingKey {}
+        ),
         "Account must be in Pending or RotatingKey status to activate"
     );
 
@@ -234,10 +231,7 @@ pub fn begin_key_rotation(
 ) -> RegistryState {
     state.assert_owner(&ctx.sender);
 
-    let mut account = state
-        .accounts
-        .get(&account_id)
-        .expect("Account not found");
+    let mut account = state.accounts.get(&account_id).expect("Account not found");
 
     assert!(
         matches!(account.status, AccountStatus::Active {}),
@@ -262,10 +256,7 @@ pub fn complete_key_rotation(
 ) -> RegistryState {
     state.assert_owner(&ctx.sender);
 
-    let mut account = state
-        .accounts
-        .get(&account_id)
-        .expect("Account not found");
+    let mut account = state.accounts.get(&account_id).expect("Account not found");
 
     assert!(
         matches!(account.status, AccountStatus::RotatingKey {}),
@@ -301,10 +292,7 @@ pub fn deactivate_account(
 ) -> RegistryState {
     state.assert_owner(&ctx.sender);
 
-    let mut account = state
-        .accounts
-        .get(&account_id)
-        .expect("Account not found");
+    let mut account = state.accounts.get(&account_id).expect("Account not found");
 
     assert!(
         !matches!(account.status, AccountStatus::Deactivated {}),

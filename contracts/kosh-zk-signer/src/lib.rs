@@ -457,9 +457,7 @@ pub fn request_reconstruction(
         "No share variables available for reconstruction"
     );
 
-    let zk_changes = vec![ZkStateChange::OpenVariables {
-        variables: var_ids,
-    }];
+    let zk_changes = vec![ZkStateChange::OpenVariables { variables: var_ids }];
 
     (state, vec![], zk_changes)
 }
@@ -566,7 +564,11 @@ pub fn on_shares_opened(
                 delta_bytes.extend_from_slice(&share.low_bytes);
 
                 // Only add if not already present (from plaintext path)
-                if !key_state.gg20_delta_indices.iter().any(|&idx| idx == party_idx) {
+                if !key_state
+                    .gg20_delta_indices
+                    .iter()
+                    .any(|&idx| idx == party_idx)
+                {
                     key_state.gg20_delta_indices.push(party_idx);
                     key_state.gg20_delta_values.push(delta_bytes);
                 }
@@ -717,11 +719,19 @@ pub fn dkg_commit(
     );
 
     // Store Feldman slope commitment C_i1 = a_i·G
-    assert_eq!(slope_commitment.len(), 33, "Slope commitment must be 33 bytes (compressed EC point)");
+    assert_eq!(
+        slope_commitment.len(),
+        33,
+        "Slope commitment must be 33 bytes (compressed EC point)"
+    );
     key_state.dkg_slope_commitments.push(slope_commitment);
 
     // Store Schnorr proof (verified during reveal when we have C_i0)
-    assert_eq!(schnorr_r.len(), 33, "Schnorr R must be 33 bytes (compressed EC point)");
+    assert_eq!(
+        schnorr_r.len(),
+        33,
+        "Schnorr R must be 33 bytes (compressed EC point)"
+    );
     assert_eq!(schnorr_z.len(), 32, "Schnorr z must be 32 bytes (scalar)");
     key_state.dkg_schnorr_r_points.push(schnorr_r);
     key_state.dkg_schnorr_z_values.push(schnorr_z);
@@ -900,8 +910,7 @@ pub fn start_threshold_sign(
     key_state.signing_phase = ZkSigningPhase::ThresholdSigning { task_id };
 
     // Set deadline for this signing round
-    key_state.signing_deadline_block =
-        ctx.block_production_time + key_state.signing_timeout_blocks;
+    key_state.signing_deadline_block = ctx.block_production_time + key_state.signing_timeout_blocks;
 
     state.keys.insert(key_id, key_state);
     (state, vec![], vec![])
@@ -947,7 +956,10 @@ pub fn submit_partial_sig(
 
     // Check party hasn't already submitted
     assert!(
-        !key_state.ts_partial_indices.iter().any(|&idx| idx == party_index),
+        !key_state
+            .ts_partial_indices
+            .iter()
+            .any(|&idx| idx == party_index),
         "Party {} has already submitted a partial signature",
         party_index
     );
@@ -991,16 +1003,12 @@ pub fn submit_partial_sig(
         signature.push(recovery_id);
 
         // Verify the combined ECDSA signature against the stored public key
-        let public_key = key_state
-            .public_key
-            .clone()
-            .expect("Public key missing");
-        let verifying_key = VerifyingKey::from_sec1_bytes(&public_key)
-            .expect("Stored public key is not valid");
+        let public_key = key_state.public_key.clone().expect("Public key missing");
+        let verifying_key =
+            VerifyingKey::from_sec1_bytes(&public_key).expect("Stored public key is not valid");
 
         let sig64 = &signature[0..64];
-        let parsed_sig = Signature::try_from(sig64)
-            .expect("Failed to parse combined signature");
+        let parsed_sig = Signature::try_from(sig64).expect("Failed to parse combined signature");
 
         let task_id = key_state.ts_task_id;
         let mut info = key_state
@@ -1095,8 +1103,7 @@ pub fn start_nonce_ceremony(
     key_state.signing_phase = ZkSigningPhase::NonceCommitting { task_id };
 
     // Set deadline for this signing round
-    key_state.signing_deadline_block =
-        ctx.block_production_time + key_state.signing_timeout_blocks;
+    key_state.signing_deadline_block = ctx.block_production_time + key_state.signing_timeout_blocks;
 
     state.keys.insert(key_id, key_state);
     (state, vec![], vec![])
@@ -1115,12 +1122,22 @@ pub fn nonce_commit(
 ) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
     let mut key_state = state.keys.get(&key_id).expect("Key not found");
     assert!(
-        matches!(key_state.signing_phase, ZkSigningPhase::NonceCommitting { .. }),
+        matches!(
+            key_state.signing_phase,
+            ZkSigningPhase::NonceCommitting { .. }
+        ),
         "Not in nonce committing phase"
     );
-    assert_eq!(commitment_hash.len(), 32, "Commitment hash must be 32 bytes");
+    assert_eq!(
+        commitment_hash.len(),
+        32,
+        "Commitment hash must be 32 bytes"
+    );
     assert!(
-        !key_state.nc_commit_indices.iter().any(|&idx| idx == party_index),
+        !key_state
+            .nc_commit_indices
+            .iter()
+            .any(|&idx| idx == party_index),
         "Party {} has already committed a nonce",
         party_index
     );
@@ -1152,12 +1169,22 @@ pub fn nonce_reveal(
 ) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
     let mut key_state = state.keys.get(&key_id).expect("Key not found");
     assert!(
-        matches!(key_state.signing_phase, ZkSigningPhase::NonceRevealing { .. }),
+        matches!(
+            key_state.signing_phase,
+            ZkSigningPhase::NonceRevealing { .. }
+        ),
         "Not in nonce revealing phase"
     );
-    assert_eq!(nonce_point.len(), 33, "Nonce point must be 33 bytes (compressed)");
+    assert_eq!(
+        nonce_point.len(),
+        33,
+        "Nonce point must be 33 bytes (compressed)"
+    );
     assert!(
-        !key_state.nc_reveal_indices.iter().any(|&idx| idx == party_index),
+        !key_state
+            .nc_reveal_indices
+            .iter()
+            .any(|&idx| idx == party_index),
         "Party {} has already revealed nonce",
         party_index
     );
@@ -1176,8 +1203,7 @@ pub fn nonce_reveal(
     );
 
     // Validate it's a real EC point
-    VerifyingKey::from_sec1_bytes(&nonce_point)
-        .expect("Invalid secp256k1 nonce point");
+    VerifyingKey::from_sec1_bytes(&nonce_point).expect("Invalid secp256k1 nonce point");
 
     key_state.nc_reveal_indices.push(party_index);
     key_state.nc_reveal_points.push(nonce_point);
@@ -1272,7 +1298,10 @@ pub fn commit_partial_sig(
     );
     assert_eq!(commitment_hash.len(), 32, "Commitment must be 32 bytes");
     assert!(
-        !key_state.ps_commit_indices.iter().any(|&idx| idx == party_index),
+        !key_state
+            .ps_commit_indices
+            .iter()
+            .any(|&idx| idx == party_index),
         "Party {} has already committed a partial signature",
         party_index
     );
@@ -1323,9 +1352,16 @@ pub fn start_pqc_approval_session(
         .expect("Unknown signing task");
 
     for &party_index in &signing_parties {
-        assert!(party_index >= 1 && party_index <= key_state.num_shares, "Invalid signing party");
         assert!(
-            signing_parties.iter().filter(|&&p| p == party_index).count() == 1,
+            party_index >= 1 && party_index <= key_state.num_shares,
+            "Invalid signing party"
+        );
+        assert!(
+            signing_parties
+                .iter()
+                .filter(|&&p| p == party_index)
+                .count()
+                == 1,
             "Signing party set contains duplicate party index {}",
             party_index
         );
@@ -1405,14 +1441,16 @@ pub fn submit_pqc_approval(
     approval_hash: Vec<u8>,
 ) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
     let mut key_state = state.keys.get(&key_id).expect("Key not found");
-    assert!(key_state.pqc_approval_active, "No active PQC approval session");
+    assert!(
+        key_state.pqc_approval_active,
+        "No active PQC approval session"
+    );
     assert!(
         !key_state.pqc_approval_approved,
         "PQC approval session already finalized"
     );
     assert_eq!(
-        key_state.pqc_approval_task_id,
-        task_id,
+        key_state.pqc_approval_task_id, task_id,
         "PQC approval session is not bound to this signing task"
     );
     assert_eq!(approval_hash.len(), 32, "Approval hash must be 32 bytes");
@@ -1421,8 +1459,7 @@ pub fn submit_pqc_approval(
         .get_party_address(party_index)
         .expect("Party has not registered an address");
     assert_eq!(
-        &ctx.sender,
-        party_addr,
+        &ctx.sender, party_addr,
         "Sender is not the registered address for this party"
     );
     assert!(
@@ -1471,14 +1508,16 @@ pub fn finalize_pqc_approval(
 ) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
     state.assert_owner(&ctx.sender);
     let mut key_state = state.keys.get(&key_id).expect("Key not found");
-    assert!(key_state.pqc_approval_active, "No active PQC approval session");
+    assert!(
+        key_state.pqc_approval_active,
+        "No active PQC approval session"
+    );
     assert!(
         !key_state.pqc_approval_approved,
         "PQC approval session already finalized"
     );
     assert_eq!(
-        key_state.pqc_approval_task_id,
-        task_id,
+        key_state.pqc_approval_task_id, task_id,
         "PQC approval session is not bound to this signing task"
     );
 
@@ -1536,7 +1575,11 @@ pub fn gg20_start_signing(
             "Signing parties must be valid 1-based indices"
         );
         assert!(
-            signing_parties.iter().filter(|&&p| p == party_index).count() == 1,
+            signing_parties
+                .iter()
+                .filter(|&&p| p == party_index)
+                .count()
+                == 1,
             "Signing party set contains duplicate party index {}",
             party_index
         );
@@ -1550,8 +1593,7 @@ pub fn gg20_start_signing(
         "PQC approval session must be finalized before GG20 signing can start"
     );
     assert_eq!(
-        key_state.pqc_approval_task_id,
-        task_id,
+        key_state.pqc_approval_task_id, task_id,
         "PQC approval session is not bound to this signing task"
     );
     assert!(
@@ -1575,7 +1617,11 @@ pub fn gg20_start_signing(
     let mut required_parties: Vec<u8> = Vec::new();
     let mut effective_min_signers = key_state.threshold as u8;
     if task_policy_id != 0 {
-        if let Some(idx) = key_state.policy_ids.iter().position(|&id| id == task_policy_id) {
+        if let Some(idx) = key_state
+            .policy_ids
+            .iter()
+            .position(|&id| id == task_policy_id)
+        {
             required_parties = key_state.policy_mandatory_parties[idx].clone();
             let policy_min = key_state.policy_min_thresholds[idx];
             if policy_min != 0 {
@@ -1598,8 +1644,7 @@ pub fn gg20_start_signing(
         effective_min_signers
     );
     assert_eq!(
-        key_state.pqc_approval_min_signers,
-        effective_min_signers,
+        key_state.pqc_approval_min_signers, effective_min_signers,
         "PQC approval session minimum signer requirement does not match current policy state"
     );
     assert!(
@@ -1652,8 +1697,7 @@ pub fn gg20_start_signing(
     key_state.ts_partial_values.clear();
 
     // Set deadline for this signing round
-    key_state.signing_deadline_block =
-        ctx.block_production_time + key_state.signing_timeout_blocks;
+    key_state.signing_deadline_block = ctx.block_production_time + key_state.signing_timeout_blocks;
 
     state.keys.insert(key_id, key_state);
     (state, vec![], vec![])
@@ -1715,7 +1759,10 @@ pub fn submit_delta(
         party_index
     );
     assert!(
-        !key_state.gg20_delta_indices.iter().any(|&idx| idx == party_index),
+        !key_state
+            .gg20_delta_indices
+            .iter()
+            .any(|&idx| idx == party_index),
         "Party {} already submitted delta",
         party_index
     );
@@ -1762,14 +1809,16 @@ pub fn submit_gamma_point(
         party_index
     );
     assert!(
-        !key_state.gg20_gamma_indices.iter().any(|&idx| idx == party_index),
+        !key_state
+            .gg20_gamma_indices
+            .iter()
+            .any(|&idx| idx == party_index),
         "Party {} already submitted gamma point",
         party_index
     );
 
     // Validate it's a real EC point
-    VerifyingKey::from_sec1_bytes(&gamma_point)
-        .expect("Invalid gamma point");
+    VerifyingKey::from_sec1_bytes(&gamma_point).expect("Invalid gamma point");
 
     key_state.gg20_gamma_indices.push(party_index);
     key_state.gg20_gamma_points.push(gamma_point);
@@ -1883,24 +1932,22 @@ pub fn gg20_finalize_r(
 
     // 1. Compute δ = Σ δ_i (mod n) using k256 Scalar
     use k256::elliptic_curve::ff::PrimeField;
-    use k256::{FieldBytes, Scalar, ProjectivePoint as K256Proj, AffinePoint as K256Affine};
     use k256::elliptic_curve::sec1::FromEncodedPoint;
     use k256::EncodedPoint;
+    use k256::{AffinePoint as K256Affine, FieldBytes, ProjectivePoint as K256Proj, Scalar};
 
     let mut delta = Scalar::ZERO;
     for dv in &key_state.gg20_delta_values {
         let mut fb = FieldBytes::default();
         fb.copy_from_slice(dv);
-        let s = Option::<Scalar>::from(Scalar::from_repr(fb))
-            .expect("Invalid delta scalar");
+        let s = Option::<Scalar>::from(Scalar::from_repr(fb)).expect("Invalid delta scalar");
         delta = delta + s;
     }
 
     // 2. Compute Γ = Σ Γ_i (EC point addition)
     let mut gamma_combined = K256Proj::IDENTITY;
     for gp in &key_state.gg20_gamma_points {
-        let encoded = EncodedPoint::from_bytes(gp)
-            .expect("Invalid gamma point encoding");
+        let encoded = EncodedPoint::from_bytes(gp).expect("Invalid gamma point encoding");
         let affine = Option::<K256Affine>::from(K256Affine::from_encoded_point(&encoded))
             .expect("Invalid gamma affine point");
         gamma_combined = gamma_combined + K256Proj::from(affine);
@@ -2040,11 +2087,18 @@ pub fn register_paillier_key(
         "Paillier modulus must be at least 2048 bits (256 bytes), got {} bytes",
         paillier_n.len()
     );
-    assert_eq!(proof_commitment.len(), 32, "Proof commitment must be 32 bytes (SHA-256)");
+    assert_eq!(
+        proof_commitment.len(),
+        32,
+        "Proof commitment must be 32 bytes (SHA-256)"
+    );
 
     // Check party hasn't already registered
     assert!(
-        !key_state.paillier_key_indices.iter().any(|&idx| idx == party_index),
+        !key_state
+            .paillier_key_indices
+            .iter()
+            .any(|&idx| idx == party_index),
         "Party {} has already registered a Paillier key",
         party_index
     );
@@ -2084,8 +2138,7 @@ pub fn initiate_blame(
     key_state.blame_k_openings.clear();
     key_state.blame_gamma_indices.clear();
     key_state.blame_gamma_openings.clear();
-    key_state.blame_deadline_block =
-        ctx.block_production_time + key_state.signing_timeout_blocks;
+    key_state.blame_deadline_block = ctx.block_production_time + key_state.signing_timeout_blocks;
 
     state.keys.insert(key_id, key_state);
     (state, vec![], vec![])
@@ -2116,17 +2169,24 @@ pub fn submit_blame_opening(
 
     // Check party hasn't already submitted blame opening
     assert!(
-        !key_state.blame_k_indices.iter().any(|&idx| idx == party_index),
+        !key_state
+            .blame_k_indices
+            .iter()
+            .any(|&idx| idx == party_index),
         "Party {} has already submitted blame opening",
         party_index
     );
 
     // Verify γ_i·G == Γ_i (the gamma point this party submitted during signing)
-    if let Some(gamma_idx) = key_state.gg20_gamma_indices.iter().position(|&idx| idx == party_index) {
+    if let Some(gamma_idx) = key_state
+        .gg20_gamma_indices
+        .iter()
+        .position(|&idx| idx == party_index)
+    {
         let stored_gamma_point = &key_state.gg20_gamma_points[gamma_idx];
 
-        use k256::{FieldBytes, Scalar, ProjectivePoint as K256Proj};
         use k256::elliptic_curve::ff::PrimeField;
+        use k256::{FieldBytes, ProjectivePoint as K256Proj, Scalar};
 
         // Compute γ_i · G
         let mut gamma_fb = FieldBytes::default();
@@ -2216,10 +2276,18 @@ pub fn submit_refresh_share(
 ) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
     let mut key_state = state.keys.get(&key_id).expect("Key not found");
     assert!(key_state.refresh_active, "No refresh in progress");
-    assert_eq!(slope_commitment.len(), 33, "Slope commitment must be 33 bytes");
+    assert_eq!(
+        slope_commitment.len(),
+        33,
+        "Slope commitment must be 33 bytes"
+    );
     assert!(
-        !key_state.refresh_indices.iter().any(|&idx| idx == party_index),
-        "Party {} already submitted refresh share", party_index
+        !key_state
+            .refresh_indices
+            .iter()
+            .any(|&idx| idx == party_index),
+        "Party {} already submitted refresh share",
+        party_index
     );
 
     key_state.refresh_indices.push(party_index);
@@ -2284,12 +2352,19 @@ pub fn submit_recovery_subshare(
 ) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
     let mut key_state = state.keys.get(&key_id).expect("Key not found");
     assert!(key_state.recovery_active, "No recovery in progress");
-    assert_ne!(party_index, key_state.recovery_lost_party, "Lost party cannot submit recovery");
+    assert_ne!(
+        party_index, key_state.recovery_lost_party,
+        "Lost party cannot submit recovery"
+    );
     assert_eq!(commitment_c0.len(), 33, "C0 commitment must be 33 bytes");
     assert_eq!(commitment_c1.len(), 33, "C1 commitment must be 33 bytes");
     assert!(
-        !key_state.recovery_indices.iter().any(|&idx| idx == party_index),
-        "Party {} already submitted recovery share", party_index
+        !key_state
+            .recovery_indices
+            .iter()
+            .any(|&idx| idx == party_index),
+        "Party {} already submitted recovery share",
+        party_index
     );
 
     key_state.recovery_indices.push(party_index);
@@ -2329,10 +2404,9 @@ fn combine_partial_signatures_with_flag(partial_values: &[Vec<u8>]) -> (Vec<u8>,
     // This is required for EVM compatibility (EIP-2)
     let sum_bytes = sum.to_bytes();
     let half_n_bytes: [u8; 32] = [
-        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d,
-        0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b, 0x20, 0xa0,
+        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b,
+        0x20, 0xa0,
     ];
     // Compare sum_bytes > half_n_bytes
     let mut is_high = false;
@@ -2350,7 +2424,6 @@ fn combine_partial_signatures_with_flag(partial_values: &[Vec<u8>]) -> (Vec<u8>,
         (sum_bytes.to_vec(), false)
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Policy + RBAC
@@ -2376,14 +2449,23 @@ pub fn add_policy(
     let mut key_state = state.keys.get(&key_id).expect("Key not found");
 
     assert!(!tx_tag.is_empty(), "tx_tag must not be empty");
-    assert!(!mandatory_parties.is_empty(), "mandatory_parties must not be empty");
     assert!(
-        mandatory_parties.iter().all(|&p| p >= 1 && p <= key_state.num_shares),
+        !mandatory_parties.is_empty(),
+        "mandatory_parties must not be empty"
+    );
+    assert!(
+        mandatory_parties
+            .iter()
+            .all(|&p| p >= 1 && p <= key_state.num_shares),
         "All mandatory_parties must be valid 1-based party indices (1..=num_shares)"
     );
     for &party_index in &mandatory_parties {
         assert!(
-            mandatory_parties.iter().filter(|&&p| p == party_index).count() == 1,
+            mandatory_parties
+                .iter()
+                .filter(|&&p| p == party_index)
+                .count()
+                == 1,
             "mandatory_parties contains duplicate party index {}",
             party_index
         );
@@ -2477,7 +2559,11 @@ pub fn register_party_address(
     );
 
     // Update existing binding if present, otherwise add new
-    if let Some(idx) = key_state.party_addr_indices.iter().position(|&i| i == party_index) {
+    if let Some(idx) = key_state
+        .party_addr_indices
+        .iter()
+        .position(|&i| i == party_index)
+    {
         key_state.party_addr_values[idx] = address;
     } else {
         key_state.party_addr_indices.push(party_index);
@@ -2515,7 +2601,10 @@ pub fn submit_kinv_zk(
     ZkInputDef<ShareMetadata, Sbi128>,
 ) {
     let key_state = state.keys.get(&key_id).expect("Key not found");
-    assert!(key_state.zk_psig_active, "ZK partial sig session not active");
+    assert!(
+        key_state.zk_psig_active,
+        "ZK partial sig session not active"
+    );
     assert!(
         key_state.is_active_signing_party(party_index),
         "Party {} is not part of the active signing subset",
@@ -2548,14 +2637,16 @@ pub fn start_zk_psig_session(
 ) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
     state.assert_owner(&ctx.sender);
     let mut key_state = state.keys.get(&key_id).expect("Key not found");
-    assert!(!key_state.zk_psig_active, "ZK partial sig session already active");
+    assert!(
+        !key_state.zk_psig_active,
+        "ZK partial sig session already active"
+    );
     assert!(
         key_state.gg20_active,
         "GG20 signing session must be active first"
     );
     assert_eq!(
-        num_parties,
-        key_state.gg20_num_parties,
+        num_parties, key_state.gg20_num_parties,
         "ZK partial signature session must use the exact active signing subset size"
     );
 
@@ -2601,7 +2692,10 @@ pub fn trigger_zk_partial_sig(
     hmsg_lo: i128,
 ) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
     let key_state = state.keys.get(&key_id).expect("Key not found");
-    assert!(key_state.zk_psig_active, "ZK partial sig session not active");
+    assert!(
+        key_state.zk_psig_active,
+        "ZK partial sig session not active"
+    );
     assert!(
         key_state.zk_psig_kinv_count >= key_state.zk_psig_kinv_expected,
         "Not all k⁻¹ halves submitted yet ({}/{})",
@@ -2630,24 +2724,19 @@ pub fn trigger_zk_partial_sig(
     };
 
     // Public input arguments — all cast to i128 (ReadWriteState impl confirmed in pbc_traits)
-    let args: Vec<i128> = vec![
-        party_index as i128,
-        r_hi,
-        r_lo,
-        hmsg_hi,
-        hmsg_lo,
-    ];
+    let args: Vec<i128> = vec![party_index as i128, r_hi, r_lo, hmsg_hi, hmsg_lo];
 
     // shortname 0x61 → compute_partial_sig in zk_compute.rs
     // shortname 0x56 → on_psig_compute_complete callback
-    let zk_changes = vec![
-        ZkStateChange::start_computation_with_inputs::<ShareMetadata, i128>(
-            ShortnameZkComputation::from_u32(0x61),
-            vec![output_meta_hi, output_meta_lo],
-            args,
-            Some(ShortnameZkComputeComplete::from_u32(0x56)),
-        ),
-    ];
+    let zk_changes = vec![ZkStateChange::start_computation_with_inputs::<
+        ShareMetadata,
+        i128,
+    >(
+        ShortnameZkComputation::from_u32(0x61),
+        vec![output_meta_hi, output_meta_lo],
+        args,
+        Some(ShortnameZkComputeComplete::from_u32(0x56)),
+    )];
 
     (state, vec![], zk_changes)
 }
@@ -2688,7 +2777,10 @@ pub fn combine_zk_partial_sigs(
     task_id: u32,
 ) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
     let mut key_state = state.keys.get(&key_id).expect("Key not found");
-    assert!(key_state.zk_psig_active, "ZK partial sig session not active");
+    assert!(
+        key_state.zk_psig_active,
+        "ZK partial sig session not active"
+    );
     assert!(
         key_state.zk_psig_result_indices.len() as u8 >= key_state.ts_num_parties,
         "Not all ZK partial signatures computed yet ({}/{})",
@@ -2808,8 +2900,7 @@ pub fn register_dilithium_pubkey(
             .get_party_address(party_index)
             .expect("Party has not registered an address; only owner can register PQC keys without address binding");
         assert_eq!(
-            &ctx.sender,
-            party_addr,
+            &ctx.sender, party_addr,
             "Sender is not the registered address for this party"
         );
     }
@@ -2864,8 +2955,7 @@ pub fn register_kyber_pubkey(
             .get_party_address(party_index)
             .expect("Party has not registered an address; only owner can register PQC keys without address binding");
         assert_eq!(
-            &ctx.sender,
-            party_addr,
+            &ctx.sender, party_addr,
             "Sender is not the registered address for this party"
         );
     }

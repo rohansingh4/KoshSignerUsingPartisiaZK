@@ -83,7 +83,14 @@ export function createZkClient(
   nodeUrl: string,
   contractAddress: string
 ): RealZkClient {
-  const blockchainClient = new Client(nodeUrl);
+  const resolvedNodeUrl = nodeUrl
+    .split(",")
+    .map((url) => url.trim())
+    .find(Boolean);
+  if (!resolvedNodeUrl) {
+    throw new Error("createZkClient requires at least one Partisia node URL");
+  }
+  const blockchainClient = new Client(resolvedNodeUrl);
   return RealZkClient.create(contractAddress, blockchainClient);
 }
 

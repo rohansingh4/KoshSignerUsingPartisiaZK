@@ -23,7 +23,10 @@ const __dirname = dirname(__filename);
 
 const SENDER_KEY = process.env.PARTISIA_SENDER_KEY ?? "";
 const SENDER_ADDR = process.env.PARTISIA_SENDER_ADDRESS ?? "";
-const NODE_URL = process.env.PARTISIA_NODE_URL ?? "https://node1.testnet.partisiablockchain.com";
+const NODE_URLS = (process.env.PARTISIA_NODE_URL ?? "https://node4.testnet.partisiablockchain.com")
+  .split(",")
+  .map((url) => url.trim())
+  .filter(Boolean);
 
 const ENGINE_ADDRESSES = [
   "00eb99a86577a18fd24b8cdda5d5b57134ca187ce4",
@@ -83,28 +86,44 @@ async function main() {
   const pbcBytes = readFileSync(pbcPath);
   console.log(`PBC file: ${pbcPath} (${pbcBytes.length} bytes)`);
 
-  const auth = SenderAuthenticationKeyPair.fromString(SENDER_KEY);
-  const txClient = BlockchainTransactionClient.create(NODE_URL, auth);
-
-  const chainConfig = new Configuration({ basePath: NODE_URL });
-  const chainController = new ChainControllerApi(chainConfig);
-
-  const deployClient = new BlockchainClientForDeploymentImpl(txClient, chainController);
-
   const initRpc = buildInitRpc();
   console.log(`Init RPC: ${initRpc.toString("hex")} (${initRpc.length} bytes)`);
+  const auth = SenderAuthenticationKeyPair.fromString(SENDER_KEY);
 
-  const builder = new DeploymentBuilder(deployClient);
-  builder.pbcFile(pbcBytes);
-  builder.initRpc(initRpc);
-  builder.gasCost(10_000_000);
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= Math.max(NODE_URLS.length, 1) * 2; attempt++) {
+    const nodeUrl = NODE_URLS[(attempt - 1) % NODE_URLS.length]!;
+    try {
+      console.log(`\nDeploying via ${nodeUrl} (attempt ${attempt}/${Math.max(NODE_URLS.length, 1) * 2})...`);
 
-  console.log("\nDeploying...");
-  const result = await builder.deploy();
+      const txClient = BlockchainTransactionClient.create(nodeUrl, auth);
+      const chainConfig = new Configuration({ basePath: nodeUrl });
+      const chainController = new ChainControllerApi(chainConfig);
+      const deployClient = new BlockchainClientForDeploymentImpl(txClient, chainController);
 
-  console.log(`\nContract deployed!`);
-  console.log(`Address: ${result.contractAddress}`);
-  console.log(`\nSet SIGNER_ADDRESS=${result.contractAddress} for testing.`);
+      const builder = new DeploymentBuilder(deployClient);
+      builder.pbcFile(pbcBytes);
+      builder.initRpc(initRpc);
+      builder.gasCost(10_000_000);
+
+      const result = await builder.deploy();
+
+      console.log(`\nContract deployed!`);
+      console.log(`Address: ${result.contractAddress}`);
+      console.log(`Node: ${nodeUrl}`);
+      console.log(`\nSet SIGNER_ADDRESS=${result.contractAddress} for testing.`);
+      return;
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`Deploy attempt failed on ${nodeUrl}: ${msg}`);
+      if (attempt < Math.max(NODE_URLS.length, 1) * 2) {
+        await new Promise((resolve) => setTimeout(resolve, 3000 * attempt));
+      }
+    }
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "unknown deploy error"));
 }
 
 main().catch((err) => {

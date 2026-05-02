@@ -1,8 +1,11 @@
 [workspace]
 members = [
+    "backend",
     "contracts/kosh-zk-signer",
     "contracts/kosh-account-registry",
     "contracts/kosh-vault",
+    # microservices
+    "services/kosh-pqc",
 ]
 resolver = "2"
 

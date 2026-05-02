@@ -14,7 +14,7 @@ import {
 } from "@partisiablockchain/blockchain-api-transaction-client";
 import type { Transaction as PbcTransaction } from "@partisiablockchain/blockchain-api-transaction-client";
 
-const DEFAULT_NODE = "https://node1.testnet.partisiablockchain.com";
+const DEFAULT_NODE = "https://node4.testnet.partisiablockchain.com";
 
 export interface PartisiaConfig {
   nodeUrl?: string;
@@ -24,14 +24,24 @@ export interface PartisiaConfig {
   senderAddress: string;
 }
 
+function formatUnknownError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err ?? "unknown error");
+}
+
 export class PartisiaClient {
-  private nodeUrl: string;
+  private nodeUrls: string[];
+  private activeNodeIndex = 0;
   private senderPrivateKey: string;
   private senderAddress: string;
   private _txClient?: BlockchainTransactionClient;
 
   constructor(config: PartisiaConfig) {
-    this.nodeUrl = config.nodeUrl ?? DEFAULT_NODE;
+    this.nodeUrls = (config.nodeUrl ?? DEFAULT_NODE)
+      .split(",")
+      .map((url) => url.trim())
+      .filter(Boolean);
+    if (this.nodeUrls.length === 0) this.nodeUrls = [DEFAULT_NODE];
     this.senderPrivateKey = config.senderPrivateKey;
     this.senderAddress = config.senderAddress;
   }
@@ -40,13 +50,19 @@ export class PartisiaClient {
   getTransactionClient(): BlockchainTransactionClient {
     if (!this._txClient) {
       const auth = SenderAuthenticationKeyPair.fromString(this.senderPrivateKey);
-      this._txClient = BlockchainTransactionClient.create(this.nodeUrl, auth);
+      this._txClient = BlockchainTransactionClient.create(this.getNodeUrl(), auth);
     }
     return this._txClient;
   }
 
   resetTransactionClient(): void {
     this._txClient = undefined;
+  }
+
+  advanceNode(): void {
+    if (this.nodeUrls.length <= 1) return;
+    this.activeNodeIndex = (this.activeNodeIndex + 1) % this.nodeUrls.length;
+    this.resetTransactionClient();
   }
 
   /** Get the sender address. */
@@ -56,7 +72,11 @@ export class PartisiaClient {
 
   /** Get the node URL. */
   getNodeUrl(): string {
-    return this.nodeUrl;
+    return this.nodeUrls[this.activeNodeIndex]!;
+  }
+
+  getAllNodeUrls(): string[] {
+    return [...this.nodeUrls];
   }
 
   /**
@@ -67,7 +87,7 @@ export class PartisiaClient {
     let lastErr: unknown;
     for (let attempt = 1; attempt <= 5; attempt++) {
       try {
-        if (attempt > 1) this.resetTransactionClient();
+        if (attempt > 1) this.advanceNode();
         const client = this.getTransactionClient();
         const signed = await client.sign(tx, gasCost);
         const sent = await client.send(signed);
@@ -78,7 +98,9 @@ export class PartisiaClient {
         await new Promise((resolve) => setTimeout(resolve, 3000 * attempt));
       }
     }
-    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "submitTransaction failed"));
+    throw new Error(
+      `submitTransaction failed for sender ${this.senderAddress} on ${this.getNodeUrl()}: ${formatUnknownError(lastErr)}`
+    );
   }
 
   /**
@@ -92,7 +114,7 @@ export class PartisiaClient {
 
   /** Read the full contract data (serializedContract) as JSON. */
   async getContractData(contractAddress: string): Promise<Record<string, unknown>> {
-    const url = `${this.nodeUrl}/shards/Shard0/blockchain/contracts/${contractAddress}?requireContractState=true`;
+    const url = `${this.getNodeUrl()}/shards/Shard0/blockchain/contracts/${contractAddress}?requireContractState=true`;
     const resp = await fetch(url);
     if (!resp.ok) throw new Error(`Failed to read state: ${resp.status}`);
     const data = await resp.json();

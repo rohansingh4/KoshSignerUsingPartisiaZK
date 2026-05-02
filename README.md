@@ -53,19 +53,19 @@ The private key `s = s₁ + s₂ + s₃` is a mathematical ghost — it can be p
 │  │  - pqc_state  → Dilithium/Kyber pubkeys, approval sessions      │ │
 │  │                                                                 │ │
 │  │  ZK Variables:                                                  │ │
-│  │  - key_share_high_i  → upper 128 bits of sᵢ (encrypted)        │ │
-│  │  - key_share_low_i   → lower 128 bits of sᵢ (encrypted)        │ │
+│  │  - key_share_high_i  → upper 128 bits of sᵢ (encrypted)         │ │
+│  │  - key_share_low_i   → lower 128 bits of sᵢ (encrypted)         │ │
 │  └──────────────────────────┬──────────────────────────────────────┘ │
 │                             │                                        │
 │        ┌────────────────────┼────────────────────┐                   │
 │        ▼                    ▼                    ▼                   │
-│   ZK Node 1           ZK Node 2           ZK Node 3                 │
+│   ZK Node 1           ZK Node 2           ZK Node 3                  │
 │   (holds encrypted    (holds encrypted    (holds encrypted           │
 │    share fragment)     share fragment)     share fragment)           │
 └─────────────────────────────────────────────────────────────────────┘
                ▲                    ▲                    ▲
                │                    │                    │
-               │  Partisia RPC (signAndSend)              │
+               │  Partisia RPC (signAndSend)             │
                │                                         │
 ┌──────────────┴──────────────────────────────┐          │
 │              TypeScript Client              │          │

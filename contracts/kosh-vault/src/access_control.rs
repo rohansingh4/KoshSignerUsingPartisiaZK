@@ -28,11 +28,7 @@ pub fn assert_is_account_owner(state: &VaultState, sender: &Address, account_id:
 }
 
 /// Assert that the sender is either the vault admin or the account owner.
-pub fn assert_is_admin_or_account_owner(
-    state: &VaultState,
-    sender: &Address,
-    account_id: u32,
-) {
+pub fn assert_is_admin_or_account_owner(state: &VaultState, sender: &Address, account_id: u32) {
     if sender == &state.owner {
         return;
     }

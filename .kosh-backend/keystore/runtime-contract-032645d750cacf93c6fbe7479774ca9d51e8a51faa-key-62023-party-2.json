@@ -1,0 +1,11 @@
+{
+  "nonce_b64": "lsM6TF0h20Zak+XP",
+  "ciphertext_b64": "o4ArxpEwvO3JVHzv/WCfEvAkv8xncERvsJZs7nWeVeRsYOsdNxNG40CF5RvBl1uw+CKQAz91cGUOKl/f4VWzaQy1O2nbeG9i926xgnD22s7OmQtyuxpJqXLSTzhr0zbK8XbN0yyxRrfzHcfSk9WUPvDQuFt08fn/lGWlVvtzW8B9uab1aJYEp0zHMwsNrVbkzQNPNYMG4yL0BE3nyJ069grEABiId+9hxRAM8UBzoEkvpCAjCQGSdiCbO2NH2UlcFYKRp0ZbPVZ2/XcIO8Ig+3q8pqnr+lap1B+4sCd34R4c0ouA48uEkGWdO/ZR4L/2QQ8f2oYsEHg+pkFibsTj6KyRz3MvQMY0y3AOKe/2PCeniL3niG0QWGCjJ3u8vSrvUdTrjMDMVFkTBVrMFhfJ24omnhVinF03BVo9kgRNUpFJ5mqxXGcvVBoyuaje6l4GL/Gqkv657yDe5pApvcVSegjc1TRG2CXvSqFtgdjzrgQ=",
+  "metadata": {
+    "contract_address": "032645d750cacf93c6fbe7479774ca9d51e8a51faa",
+    "key_id": 62023,
+    "party_index": 2,
+    "public_key_hex": "0220b654339f49882de0168fa23ee3599dbc08b5d53c9f5256b9af3ba5771ffe4e",
+    "runtime_version": "phase7-foundation"
+  }
+}

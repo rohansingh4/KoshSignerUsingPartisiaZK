@@ -1,0 +1,12 @@
+version: v1
+plugins:
+  # Generate Go structs + gRPC server/client code
+  - plugin: buf.build/protocolbuffers/go
+    out: gen/go
+    opt:
+      - paths=source_relative
+  - plugin: buf.build/grpc/go
+    out: gen/go
+    opt:
+      - paths=source_relative
+      - require_unimplemented_servers=false
