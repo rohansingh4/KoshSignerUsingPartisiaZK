@@ -114,6 +114,7 @@ fn build_chain_relay(config: &Config) -> ChainRelay {
         sender_address: config.partisia_sender_address.clone(),
         sender_key: config.partisia_sender_key.clone(),
         confirm_timeout: config.partisia_confirm_timeout,
+        poll_interval: config.partisia_poll_interval,
         max_retries: config.partisia_max_retries,
     })
 }

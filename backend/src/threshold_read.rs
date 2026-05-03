@@ -1,12 +1,14 @@
 use anyhow::{anyhow, Result};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use base64::Engine;
 use k256::{elliptic_curve::sec1::ToEncodedPoint, PublicKey};
-use kosh_zk_signer::signing_state::{SigningInformation, ZkKeyGenPhase, ZkKeyState, ZkSigningPhase};
+use kosh_zk_signer::signing_state::{
+    SigningInformation, ZkKeyGenPhase, ZkKeyState, ZkSigningPhase,
+};
 use pbc_traits::ReadWriteState;
 use serde::Serialize;
 use serde_json::Value;
 use sha3::{Digest, Keccak256};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +47,10 @@ pub async fn threshold_key_status(state: &Value, key_id: u32) -> Result<Threshol
     Ok(missing_key_status(key_id))
 }
 
+pub async fn decode_key_state(state: &Value, key_id: u32) -> Result<Option<ZkKeyState>> {
+    maybe_decode_from_avl_tree(state, key_id).await
+}
+
 pub async fn threshold_task_signature(
     state: &Value,
     key_id: u32,
@@ -55,7 +61,9 @@ pub async fn threshold_task_signature(
     }
 
     if let Some(key) = maybe_decode_from_avl_tree(state, key_id).await? {
-        return Ok(threshold_task_signature_from_typed(state, key_id, task_id, &key));
+        return Ok(threshold_task_signature_from_typed(
+            state, key_id, task_id, &key,
+        ));
     }
 
     if looks_like_decoded_key_state(state) {
@@ -128,8 +136,15 @@ fn threshold_task_signature_from_decoded(
     }
 }
 
-fn threshold_key_status_from_typed(state: &Value, key_id: u32, key: &ZkKeyState) -> Result<ThresholdKeyStatus> {
-    let public_key_hex = key.public_key.as_ref().map(|bytes| format!("0x{}", hex::encode(bytes)));
+fn threshold_key_status_from_typed(
+    state: &Value,
+    key_id: u32,
+    key: &ZkKeyState,
+) -> Result<ThresholdKeyStatus> {
+    let public_key_hex = key
+        .public_key
+        .as_ref()
+        .map(|bytes| format!("0x{}", hex::encode(bytes)));
     let evm_address = public_key_hex
         .as_deref()
         .map(pub_key_to_evm_address)
@@ -257,7 +272,6 @@ fn parse_phase_discriminant(phase: Option<&Value>) -> Option<u64> {
     }
 }
 
-
 fn read_signing_information_from_avl(
     state: &Value,
     map: &impl ReadWriteState,
@@ -275,16 +289,21 @@ fn read_signing_information_from_avl(
                 .and_then(|key| key.get("data"))
                 .and_then(|data| data.get("data"))
                 .and_then(Value::as_str)?;
-            let key_bytes = base64::engine::general_purpose::STANDARD.decode(key_b64).ok()?;
+            let key_bytes = base64::engine::general_purpose::STANDARD
+                .decode(key_b64)
+                .ok()?;
             if key_bytes.len() != 4 {
                 return None;
             }
-            let task_id = u32::from_le_bytes([key_bytes[0], key_bytes[1], key_bytes[2], key_bytes[3]]);
+            let task_id =
+                u32::from_le_bytes([key_bytes[0], key_bytes[1], key_bytes[2], key_bytes[3]]);
             let value_b64 = entry
                 .get("value")
                 .and_then(|value| value.get("data"))
                 .and_then(Value::as_str)?;
-            let value_bytes = base64::engine::general_purpose::STANDARD.decode(value_b64).ok()?;
+            let value_bytes = base64::engine::general_purpose::STANDARD
+                .decode(value_b64)
+                .ok()?;
             let info = SigningInformation::state_read_from(&mut value_bytes.as_slice());
             Some((task_id, info))
         })
@@ -295,7 +314,8 @@ fn read_signing_information_from_avl(
 
 fn avl_tree_id(map: &impl ReadWriteState) -> u64 {
     let mut bytes = Vec::new();
-    map.state_write_to(&mut bytes).expect("serialize avl tree id");
+    map.state_write_to(&mut bytes)
+        .expect("serialize avl tree id");
     i32::from_le_bytes(bytes[..4].try_into().expect("tree id bytes")) as u64
 }
 
@@ -390,14 +410,19 @@ async fn maybe_decode_from_avl_tree(state: &Value, key_id: u32) -> Result<Option
     }
     let lookup_key_b64 = encode_key_id_base64(key_id);
     let avl_entries = avl_trees_root(state)
-        .and_then(|trees| trees.iter().find(|tree| tree.get("key").and_then(Value::as_u64) == Some(0)))
+        .and_then(|trees| {
+            trees
+                .iter()
+                .find(|tree| tree.get("key").and_then(Value::as_u64) == Some(0))
+        })
         .and_then(|tree| tree.get("value"))
         .and_then(|value| value.get("avlTree"))
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow!("missing avl tree entries"))?;
 
     let entry = avl_entries.iter().find(|entry| {
-        entry.get("key")
+        entry
+            .get("key")
             .and_then(|key| key.get("data"))
             .and_then(|data| data.get("data"))
             .and_then(Value::as_str)
@@ -415,8 +440,10 @@ async fn maybe_decode_from_avl_tree(state: &Value, key_id: u32) -> Result<Option
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(value_b64)
         .map_err(|err| anyhow!("decode avl tree value: {err}"))?;
-    let decoded = catch_unwind(AssertUnwindSafe(|| ZkKeyState::state_read_from(&mut bytes.as_slice())))
-        .map_err(|_| anyhow!("panic while decoding avl tree value"))?;
+    let decoded = catch_unwind(AssertUnwindSafe(|| {
+        ZkKeyState::state_read_from(&mut bytes.as_slice())
+    }))
+    .map_err(|_| anyhow!("panic while decoding avl tree value"))?;
     Ok(Some(decoded))
 }
 

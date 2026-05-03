@@ -36,23 +36,45 @@ function parseSignatureBytes(sigHex) {
 }
 
 async function build(from, to, valueWei) {
-  const [nonce, fees, chainId] = await Promise.all([
+  const [nonce, fees, chainId, balance] = await Promise.all([
     client.getTransactionCount({ address: from }),
     client.estimateFeesPerGas(),
     client.getChainId(),
+    client.getBalance({ address: from }),
   ]);
+  const requestedValue = BigInt(valueWei);
+  const gas = 21_000n;
+  const gasCost = gas * fees.maxFeePerGas;
+  if (balance <= gasCost) {
+    throw new Error(`sender ${from} does not have enough Sepolia ETH for gas; balance=${balance} gas_cost=${gasCost}`);
+  }
+  const spendableValue = balance - gasCost;
+  const adjustedValue = requestedValue > spendableValue ? spendableValue : requestedValue;
   const tx = {
     to,
-    value: BigInt(valueWei),
+    value: adjustedValue,
     chainId,
     nonce,
     maxFeePerGas: fees.maxFeePerGas,
     maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-    gas: 21_000n,
+    gas,
     type: 'eip1559',
   };
   const signingHash = keccak256(serializeTransaction(tx));
-  process.stdout.write(JSON.stringify({ unsigned_tx: tx, signing_hash: signingHash }, bigintReplacer));
+  process.stdout.write(
+    JSON.stringify(
+      {
+        unsigned_tx: tx,
+        signing_hash: signingHash,
+        sender_balance: balance,
+        requested_value: requestedValue,
+        adjusted_value: adjustedValue,
+        was_value_adjusted: adjustedValue !== requestedValue,
+        gas_cost: gasCost,
+      },
+      bigintReplacer,
+    ),
+  );
 }
 
 async function signAndSubmit(unsignedTxPath, signatureHex) {

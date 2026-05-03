@@ -78,7 +78,10 @@ pub fn wrap_cleartext(public_key: &PaillierPublicKey, value_hex: String) -> Pail
     }
 }
 
-pub fn paillier_encrypt(public_key: &PaillierPublicKey, message: &BigUint) -> Result<PaillierCiphertext> {
+pub fn paillier_encrypt(
+    public_key: &PaillierPublicKey,
+    message: &BigUint,
+) -> Result<PaillierCiphertext> {
     let n = parse_biguint(&public_key.n_hex)?;
     let n2 = parse_biguint(&public_key.n2_hex)?;
     let g = parse_biguint(&public_key.g_hex)?;
@@ -107,7 +110,11 @@ pub fn paillier_decrypt(
     Ok((l_value * mu) % n)
 }
 
-pub fn paillier_add(public_key: &PaillierPublicKey, c1: &PaillierCiphertext, c2: &PaillierCiphertext) -> Result<PaillierCiphertext> {
+pub fn paillier_add(
+    public_key: &PaillierPublicKey,
+    c1: &PaillierCiphertext,
+    c2: &PaillierCiphertext,
+) -> Result<PaillierCiphertext> {
     let n2 = parse_biguint(&public_key.n2_hex)?;
     let left = parse_biguint(&c1.value_hex)?;
     let right = parse_biguint(&c2.value_hex)?;
@@ -132,11 +139,15 @@ pub fn paillier_scalar_mul(
     })
 }
 
-pub fn signed_from_decrypted(public_key: &PaillierPublicKey, decrypted: &BigUint) -> Result<BigInt> {
+pub fn signed_from_decrypted(
+    public_key: &PaillierPublicKey,
+    decrypted: &BigUint,
+) -> Result<BigInt> {
     let n = parse_biguint(&public_key.n_hex)?;
     let half = &n >> 1usize;
     if decrypted > &half {
-        Ok(BigInt::from_biguint(Sign::Plus, decrypted.clone()) - BigInt::from_biguint(Sign::Plus, n))
+        Ok(BigInt::from_biguint(Sign::Plus, decrypted.clone())
+            - BigInt::from_biguint(Sign::Plus, n))
     } else {
         Ok(BigInt::from_biguint(Sign::Plus, decrypted.clone()))
     }
@@ -266,7 +277,9 @@ fn is_probable_prime(n: &BigUint, rounds: usize) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{paillier_add, paillier_decrypt, paillier_encrypt, paillier_keygen, paillier_scalar_mul};
+    use super::{
+        paillier_add, paillier_decrypt, paillier_encrypt, paillier_keygen, paillier_scalar_mul,
+    };
     use num_bigint::BigUint;
 
     #[test]
@@ -284,8 +297,10 @@ mod tests {
         let dec_sum = paillier_decrypt(&keys.public_key, &keys.private_key, &enc_sum).unwrap();
         assert_eq!(dec_sum, BigUint::from(31u32));
 
-        let enc_scaled = paillier_scalar_mul(&keys.public_key, &enc_a, &BigUint::from(7u32)).unwrap();
-        let dec_scaled = paillier_decrypt(&keys.public_key, &keys.private_key, &enc_scaled).unwrap();
+        let enc_scaled =
+            paillier_scalar_mul(&keys.public_key, &enc_a, &BigUint::from(7u32)).unwrap();
+        let dec_scaled =
+            paillier_decrypt(&keys.public_key, &keys.private_key, &enc_scaled).unwrap();
         assert_eq!(dec_scaled, BigUint::from(84u32));
     }
 }

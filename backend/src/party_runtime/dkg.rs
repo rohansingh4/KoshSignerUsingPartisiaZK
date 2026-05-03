@@ -141,7 +141,11 @@ pub fn compute_lagrange_coefficient(party_index: u8, signing_subset: &[u8]) -> R
     Ok(numerator * denominator_inv)
 }
 
-pub fn compute_adjusted_share(shamir_share_hex: &str, party_index: u8, signing_subset: &[u8]) -> Result<String> {
+pub fn compute_adjusted_share(
+    shamir_share_hex: &str,
+    party_index: u8,
+    signing_subset: &[u8],
+) -> Result<String> {
     let share = scalar_from_hex(shamir_share_hex)?;
     let lambda = compute_lagrange_coefficient(party_index, signing_subset)?;
     Ok(hex::encode((lambda * share).to_bytes()))
@@ -242,8 +246,14 @@ mod tests {
     fn lagrange_coefficients_for_subset_1_2_sum_to_secret_basis() {
         let lambda1 = compute_lagrange_coefficient(1, &[1, 2]).unwrap();
         let lambda2 = compute_lagrange_coefficient(2, &[1, 2]).unwrap();
-        assert_eq!(hex::encode(lambda1.to_bytes()), "0000000000000000000000000000000000000000000000000000000000000002");
-        assert_eq!(hex::encode(lambda2.to_bytes()), "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140");
+        assert_eq!(
+            hex::encode(lambda1.to_bytes()),
+            "0000000000000000000000000000000000000000000000000000000000000002"
+        );
+        assert_eq!(
+            hex::encode(lambda2.to_bytes()),
+            "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140"
+        );
     }
 
     #[test]

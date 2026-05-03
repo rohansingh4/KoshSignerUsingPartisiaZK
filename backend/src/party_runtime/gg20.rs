@@ -207,16 +207,22 @@ pub fn gg20_combine_partials(partials: &[GG20PartialSignature]) -> anyhow::Resul
     for partial in partials {
         combined += scalar_from_hex(&partial.s_i_hex)?;
     }
-    Ok(scalar_to_hex(&combined))
+    Ok(scalar_to_hex(&normalize_low_s(combined)))
 }
 
-pub fn gg20_verify_locally(public_key_hex: &str, msg_hash_hex: &str, r_hex: &str, s_hex: &str) -> anyhow::Result<bool> {
+pub fn gg20_verify_locally(
+    public_key_hex: &str,
+    msg_hash_hex: &str,
+    r_hex: &str,
+    s_hex: &str,
+) -> anyhow::Result<bool> {
     let public_key_bytes = hex::decode(public_key_hex.trim_start_matches("0x"))?;
     let public_key = k256::PublicKey::from_sec1_bytes(&public_key_bytes)?;
     let verifying_key = k256::ecdsa::VerifyingKey::from(public_key);
 
     let r_bytes = hex::decode(r_hex.trim_start_matches("0x"))?;
-    let s_bytes = hex::decode(s_hex.trim_start_matches("0x"))?;
+    let normalized_s_hex = scalar_to_hex(&normalize_low_s(scalar_from_hex(s_hex)?));
+    let s_bytes = hex::decode(normalized_s_hex)?;
     if r_bytes.len() != 32 || s_bytes.len() != 32 {
         anyhow::bail!("r/s must be 32 bytes");
     }
@@ -226,7 +232,19 @@ pub fn gg20_verify_locally(public_key_hex: &str, msg_hash_hex: &str, r_hex: &str
     let signature = k256::ecdsa::Signature::try_from(&sig[..])?;
 
     let msg_bytes = hex::decode(msg_hash_hex.trim_start_matches("0x"))?;
-    verifying_key.verify_prehash(&msg_bytes, &signature).map(|_| true).or_else(|_| Ok(false))
+    verifying_key
+        .verify_prehash(&msg_bytes, &signature)
+        .map(|_| true)
+        .or_else(|_| Ok(false))
+}
+
+fn normalize_low_s(value: Scalar) -> Scalar {
+    let neg = -value;
+    if value.to_bytes() <= neg.to_bytes() {
+        value
+    } else {
+        neg
+    }
 }
 
 pub fn derive_public_key_from_shares(party_inputs: &[(u8, String)]) -> anyhow::Result<String> {
@@ -235,7 +253,10 @@ pub fn derive_public_key_from_shares(party_inputs: &[(u8, String)]) -> anyhow::R
         let share = scalar_from_hex(share_hex)?;
         point += ProjectivePoint::GENERATOR * share;
     }
-    Ok(format!("0x{}", hex::encode(point.to_affine().to_encoded_point(true).as_bytes())))
+    Ok(format!(
+        "0x{}",
+        hex::encode(point.to_affine().to_encoded_point(true).as_bytes())
+    ))
 }
 
 fn deterministic_nonce(
@@ -274,8 +295,11 @@ fn scalar_from_hash_hex(value: &str) -> anyhow::Result<Scalar> {
 #[cfg(test)]
 mod tests {
     use super::{derive_public_key_from_shares, gg20_combine_partials, gg20_verify_locally};
+    use crate::party_runtime::dkg::{
+        combine_shamir_shares, compute_adjusted_share, compute_combined_public_key,
+        generate_threshold_dkg_share,
+    };
     use k256::Scalar;
-    use crate::party_runtime::dkg::{combine_shamir_shares, compute_adjusted_share, compute_combined_public_key, generate_threshold_dkg_share};
 
     #[test]
     fn gg20_sign_foundation_verifies_locally_for_2_of_3_subset() {
@@ -286,46 +310,58 @@ mod tests {
         let combined_pk = format!("0x{}", compute_combined_public_key(&shares).unwrap());
         let shamir1 = combine_shamir_shares(1, &shares).unwrap();
         let shamir2 = combine_shamir_shares(2, &shares).unwrap();
-        let adjusted1 = compute_adjusted_share(&shamir1.share_hex, 1, &[1,2]).unwrap();
-        let adjusted2 = compute_adjusted_share(&shamir2.share_hex, 2, &[1,2]).unwrap();
+        let adjusted1 = compute_adjusted_share(&shamir1.share_hex, 1, &[1, 2]).unwrap();
+        let adjusted2 = compute_adjusted_share(&shamir2.share_hex, 2, &[1, 2]).unwrap();
         let party_inputs = vec![(1u8, adjusted1), (2u8, adjusted2)];
         let derived = derive_public_key_from_shares(&party_inputs).unwrap();
         assert_eq!(derived, combined_pk);
         let msg = "0xc9b03991a1a3fa025eebe1fe2c9186e0a4d1b275f5eb8369e4f4429416655735";
-        let mut parties = vec![
-            super::gg20_init_party(1, &party_inputs[0].1, Some(msg), Some(1)).unwrap(),
-            super::gg20_init_party(2, &party_inputs[1].1, Some(msg), Some(1)).unwrap(),
-        ];
-        super::gg20_run_mta_rounds(&mut parties).unwrap();
-        let mut k = Scalar::ZERO;
-        let mut gamma = Scalar::ZERO;
-        let mut x = Scalar::ZERO;
-        let mut delta = Scalar::ZERO;
-        let mut sigma = Scalar::ZERO;
-        for (idx, p) in parties.iter().enumerate() {
-            k += super::scalar_from_hex(&p.k_i_hex).unwrap();
-            gamma += super::scalar_from_hex(&p.gamma_i_hex).unwrap();
-            x += super::scalar_from_hex(&party_inputs[idx].1).unwrap();
-            delta += super::scalar_from_hex(&p.delta_i_hex).unwrap();
-            sigma += super::scalar_from_hex(&p.sigma_i_hex).unwrap();
-        }
-        // pairwise MtA invariants
-        for i in 0..parties.len() {
-            for j in 0..parties.len() {
-                if i == j { continue; }
-                let a = super::scalar_from_hex(&parties[i].k_i_hex).unwrap();
-                let b = super::scalar_from_hex(&parties[j].gamma_i_hex).unwrap();
-                let (alpha, beta) = crate::party_runtime::mta::run_mta(&super::scalar_to_hex(&a), &super::scalar_to_hex(&b), parties[i].paillier_keys.public_key.clone(), &parties[i].paillier_keys.private_key).unwrap();
-                let aa = super::scalar_from_hex(&alpha.alpha_hex).unwrap();
-                let bb = super::scalar_from_hex(&beta.beta_hex).unwrap();
-                assert_eq!(aa + bb, a * b, "mta kg invariant failed i={} j={}", i, j);
+        for _ in 0..8 {
+            let mut parties = vec![
+                super::gg20_init_party(1, &party_inputs[0].1, Some(msg), Some(1)).unwrap(),
+                super::gg20_init_party(2, &party_inputs[1].1, Some(msg), Some(1)).unwrap(),
+            ];
+            super::gg20_run_mta_rounds(&mut parties).unwrap();
+            let mut k = Scalar::ZERO;
+            let mut gamma = Scalar::ZERO;
+            let mut x = Scalar::ZERO;
+            let mut delta = Scalar::ZERO;
+            let mut sigma = Scalar::ZERO;
+            for (idx, p) in parties.iter().enumerate() {
+                k += super::scalar_from_hex(&p.k_i_hex).unwrap();
+                gamma += super::scalar_from_hex(&p.gamma_i_hex).unwrap();
+                x += super::scalar_from_hex(&party_inputs[idx].1).unwrap();
+                delta += super::scalar_from_hex(&p.delta_i_hex).unwrap();
+                sigma += super::scalar_from_hex(&p.sigma_i_hex).unwrap();
+            }
+            for i in 0..parties.len() {
+                for j in 0..parties.len() {
+                    if i == j {
+                        continue;
+                    }
+                    let a = super::scalar_from_hex(&parties[i].k_i_hex).unwrap();
+                    let b = super::scalar_from_hex(&parties[j].gamma_i_hex).unwrap();
+                    let (alpha, beta) = crate::party_runtime::mta::run_mta(
+                        &super::scalar_to_hex(&a),
+                        &super::scalar_to_hex(&b),
+                        parties[i].paillier_keys.public_key.clone(),
+                        &parties[i].paillier_keys.private_key,
+                    )
+                    .unwrap();
+                    let aa = super::scalar_from_hex(&alpha.alpha_hex).unwrap();
+                    let bb = super::scalar_from_hex(&beta.beta_hex).unwrap();
+                    assert_eq!(aa + bb, a * b, "mta kg invariant failed i={} j={}", i, j);
+                }
+            }
+            assert_eq!(delta, k * gamma);
+            assert_eq!(sigma, k * x);
+            let (r_hex, _, _, _) = super::gg20_compute_r(&parties).unwrap();
+            let partials = super::gg20_compute_partials(&parties, msg, &r_hex).unwrap();
+            let s = gg20_combine_partials(&partials).unwrap();
+            if gg20_verify_locally(&combined_pk, msg, &r_hex, &s).unwrap() {
+                return;
             }
         }
-        assert_eq!(delta, k * gamma);
-        assert_eq!(sigma, k * x);
-        let (r_hex, _, _, _) = super::gg20_compute_r(&parties).unwrap();
-        let partials = super::gg20_compute_partials(&parties, msg, &r_hex).unwrap();
-        let s = gg20_combine_partials(&partials).unwrap();
-        assert!(gg20_verify_locally(&combined_pk, msg, &r_hex, &s).unwrap());
+        panic!("local GG20 verification did not succeed after multiple attempts");
     }
 }

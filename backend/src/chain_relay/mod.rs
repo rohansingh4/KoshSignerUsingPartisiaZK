@@ -15,6 +15,7 @@ pub struct ChainRelayConfig {
     pub sender_address: Option<String>,
     pub sender_key: Option<String>,
     pub confirm_timeout: Duration,
+    pub poll_interval: Duration,
     pub max_retries: u32,
 }
 
@@ -23,7 +24,14 @@ pub struct ChainRelay {
     config: Arc<ChainRelayConfig>,
     client: Client,
     active_index: Arc<Mutex<usize>>,
+    sender_state: Arc<Mutex<Option<SenderState>>>,
     last_error: Arc<RwLock<Option<String>>>,
+}
+
+#[derive(Clone, Debug)]
+struct SenderState {
+    chain_id: String,
+    next_nonce: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,12 +52,20 @@ pub struct SubmitActionResult {
     pub destination_shard_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PipelineAction {
+    pub action: String,
+    pub payload: Vec<u8>,
+    pub gas_cost: u64,
+}
+
 impl ChainRelay {
     pub fn new(config: ChainRelayConfig) -> Self {
         Self {
             config: Arc::new(config),
             client: Client::new(),
             active_index: Arc::new(Mutex::new(0)),
+            sender_state: Arc::new(Mutex::new(None)),
             last_error: Arc::new(RwLock::new(None)),
         }
     }
@@ -172,24 +188,38 @@ impl ChainRelay {
             let sender_key = sender_key.clone();
             let sender_address = sender_address.clone();
             async move {
-                let chain_id = fetch_chain_id(&self.client, &node).await?;
-                let nonce = fetch_nonce(&self.client, &node, &sender_address).await?;
-                let signed = sign_transaction(
-                    &sender_key,
-                    nonce,
-                    current_time_millis() + self.config.confirm_timeout.as_millis() as i64,
-                    gas_cost as i64,
-                    &chain_id,
-                    &contract_address,
-                    &payload,
-                )?;
-                let submitted = submit_serialized_transaction(&self.client, &node, &signed).await?;
+                let mut attempted_nonce_retry = false;
+                let submitted = loop {
+                    let reserved = self.reserve_sender_state(&node, &sender_address).await?;
+                    let signed = sign_transaction(
+                        &sender_key,
+                        reserved.next_nonce,
+                        current_time_millis() + self.config.confirm_timeout.as_millis() as i64,
+                        gas_cost as i64,
+                        &reserved.chain_id,
+                        &contract_address,
+                        &payload,
+                    )?;
+                    match submit_serialized_transaction(&self.client, &node, &signed).await {
+                        Ok(submitted) => break submitted,
+                        Err(err) if !attempted_nonce_retry && is_unexpected_nonce_error(&err) => {
+                            attempted_nonce_retry = true;
+                            self.invalidate_sender_state().await;
+                            continue;
+                        }
+                        Err(err) => {
+                            self.invalidate_sender_state().await;
+                            return Err(err);
+                        }
+                    }
+                };
                 let tree = wait_for_spawned_events(
                     &self.client,
                     &node,
                     &submitted.destination_shard_id,
                     &submitted.tx_hash,
                     self.config.confirm_timeout,
+                    self.config.poll_interval,
                 )
                 .await?;
                 ensure_execution_success(&tree)?;
@@ -197,6 +227,143 @@ impl ChainRelay {
             }
         })
         .await
+    }
+
+    pub async fn submit_action_pipeline(
+        &self,
+        contract_address: &str,
+        actions: &[PipelineAction],
+    ) -> Result<Vec<SubmitActionResult>> {
+        if actions.is_empty() {
+            return Ok(vec![]);
+        }
+        let sender_address = self.config.sender_address.clone().ok_or_else(|| {
+            anyhow!("PARTISIA_SENDER_ADDRESS is required for submit_action_pipeline")
+        })?;
+        let sender_key =
+            self.config.sender_key.clone().ok_or_else(|| {
+                anyhow!("PARTISIA_SENDER_KEY is required for submit_action_pipeline")
+            })?;
+        let node = self
+            .active_node()
+            .await
+            .or_else(|| self.config.node_urls.first().cloned())
+            .ok_or_else(|| anyhow!("submit_action_pipeline: no Partisia nodes configured"))?;
+
+        let reserved = self
+            .reserve_sender_nonces(&node, &sender_address, actions.len())
+            .await?;
+        let mut submitted = Vec::with_capacity(actions.len());
+        for (offset, action) in actions.iter().enumerate() {
+            let mut nonce = reserved.next_nonce + offset as i64;
+            let chain_id = reserved.chain_id.clone();
+            let mut attempted_nonce_retry = false;
+            loop {
+                let signed = sign_transaction(
+                    &sender_key,
+                    nonce,
+                    current_time_millis() + self.config.confirm_timeout.as_millis() as i64,
+                    action.gas_cost as i64,
+                    &chain_id,
+                    contract_address,
+                    &action.payload,
+                )?;
+                match submit_serialized_transaction(&self.client, &node, &signed).await {
+                    Ok(tx) => {
+                        submitted.push(tx);
+                        break;
+                    }
+                    Err(err) if !attempted_nonce_retry && is_unexpected_nonce_error(&err) => {
+                        attempted_nonce_retry = true;
+                        self.invalidate_sender_state().await;
+                        let refreshed =
+                            self.reserve_sender_state(&node, &sender_address).await?;
+                        nonce = refreshed.next_nonce;
+                        continue;
+                    }
+                    Err(err) => {
+                        self.invalidate_sender_state().await;
+                        self.record_error(format!("{} via {}: {}", action.action, node, err))
+                            .await;
+                        return Err(err);
+                    }
+                }
+            }
+        }
+
+        let mut results = Vec::with_capacity(submitted.len());
+        for (action, tx) in actions.iter().zip(submitted.into_iter()) {
+            let tree = wait_for_spawned_events(
+                &self.client,
+                &node,
+                &tx.destination_shard_id,
+                &tx.tx_hash,
+                self.config.confirm_timeout,
+                self.config.poll_interval,
+            )
+            .await
+            .map_err(|err| anyhow!("{} via {}: {}", action.action, node, err))?;
+            ensure_execution_success(&tree)
+                .map_err(|err| anyhow!("{} via {}: {}", action.action, node, err))?;
+            results.push(tx);
+        }
+        self.clear_error().await;
+        Ok(results)
+    }
+
+    async fn reserve_sender_state(&self, node: &str, sender_address: &str) -> Result<SenderState> {
+        let mut guard = self.sender_state.lock().await;
+        if let Some(state) = guard.as_mut() {
+            let reserved = SenderState {
+                chain_id: state.chain_id.clone(),
+                next_nonce: state.next_nonce,
+            };
+            state.next_nonce += 1;
+            return Ok(reserved);
+        }
+
+        let chain_id = fetch_chain_id(&self.client, node).await?;
+        let nonce = fetch_nonce(&self.client, node, sender_address).await?;
+        *guard = Some(SenderState {
+            chain_id: chain_id.clone(),
+            next_nonce: nonce + 1,
+        });
+        Ok(SenderState {
+            chain_id,
+            next_nonce: nonce,
+        })
+    }
+
+    async fn reserve_sender_nonces(
+        &self,
+        node: &str,
+        sender_address: &str,
+        count: usize,
+    ) -> Result<SenderState> {
+        let mut guard = self.sender_state.lock().await;
+        if let Some(state) = guard.as_mut() {
+            let reserved = SenderState {
+                chain_id: state.chain_id.clone(),
+                next_nonce: state.next_nonce,
+            };
+            state.next_nonce += count as i64;
+            return Ok(reserved);
+        }
+
+        let chain_id = fetch_chain_id(&self.client, node).await?;
+        let nonce = fetch_nonce(&self.client, node, sender_address).await?;
+        *guard = Some(SenderState {
+            chain_id: chain_id.clone(),
+            next_nonce: nonce + count as i64,
+        });
+        Ok(SenderState {
+            chain_id,
+            next_nonce: nonce,
+        })
+    }
+
+    async fn invalidate_sender_state(&self) {
+        *self.sender_state.lock().await = None;
     }
 
     async fn try_across_nodes<F, Fut, T>(&self, label: &str, mut op: F) -> Result<T>
@@ -243,9 +410,19 @@ impl ChainRelay {
     }
 }
 
+fn is_unexpected_nonce_error(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.contains("UNEXPECTED_NONCE")
+        || message.contains("transaction nonce did not match the expected nonce")
+}
+
 async fn fetch_chain_id(client: &Client, node: &str) -> Result<String> {
     let url = format!("{node}/chain");
-    let response = client.get(&url).send().await.with_context(|| format!("GET {url}"))?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -260,7 +437,11 @@ async fn fetch_chain_id(client: &Client, node: &str) -> Result<String> {
 
 async fn fetch_nonce(client: &Client, node: &str, sender_address: &str) -> Result<i64> {
     let url = format!("{node}/chain/accounts/{sender_address}");
-    let response = client.get(&url).send().await.with_context(|| format!("GET {url}"))?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -294,7 +475,11 @@ fn sign_transaction(
     let (signature, recovery_id) = signing_key
         .sign_prehash_recoverable(&hash)
         .map_err(|err| anyhow!("sign Partisia transaction: {err}"))?;
-    Ok(serialize_signed_transaction(recovery_id, &signature, &inner))
+    Ok(serialize_signed_transaction(
+        recovery_id,
+        &signature,
+        &inner,
+    ))
 }
 
 fn serialize_inner_transaction(
@@ -316,7 +501,11 @@ fn serialize_inner_transaction(
     Ok(out)
 }
 
-fn serialize_signed_transaction(recovery_id: RecoveryId, signature: &Signature, inner: &[u8]) -> Vec<u8> {
+fn serialize_signed_transaction(
+    recovery_id: RecoveryId,
+    signature: &Signature,
+    inner: &[u8],
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(65 + inner.len());
     out.push(recovery_id.to_byte());
     out.extend_from_slice(&signature.r().to_bytes());
@@ -325,7 +514,11 @@ fn serialize_signed_transaction(recovery_id: RecoveryId, signature: &Signature, 
     out
 }
 
-async fn submit_serialized_transaction(client: &Client, node: &str, signed: &[u8]) -> Result<SubmitActionResult> {
+async fn submit_serialized_transaction(
+    client: &Client,
+    node: &str,
+    signed: &[u8],
+) -> Result<SubmitActionResult> {
     let url = format!("{node}/chain/transactions");
     let payload = serde_json::json!({
         "payload": base64::engine::general_purpose::STANDARD.encode(signed)
@@ -341,16 +534,25 @@ async fn submit_serialized_transaction(client: &Client, node: &str, signed: &[u8
         let body = response.text().await.unwrap_or_default();
         return Err(anyhow!("put transaction failed with HTTP {status}: {body}"));
     }
-    let body: Value = response.json().await.context("decode putTransaction json")?;
-    let tx_hash = body.get("identifier")
+    let body: Value = response
+        .json()
+        .await
+        .context("decode putTransaction json")?;
+    let tx_hash = body
+        .get("identifier")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .ok_or_else(|| anyhow!("transaction identifier missing"))?;
-    let destination_shard_id = body.get("destinationShardId")
+    let destination_shard_id = body
+        .get("destinationShardId")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| "Shard0".to_string());
-    Ok(SubmitActionResult { tx_hash, node_url: node.to_string(), destination_shard_id })
+    Ok(SubmitActionResult {
+        tx_hash,
+        node_url: node.to_string(),
+        destination_shard_id,
+    })
 }
 
 async fn wait_for_spawned_events(
@@ -359,6 +561,7 @@ async fn wait_for_spawned_events(
     shard_id: &str,
     tx_id: &str,
     timeout: Duration,
+    poll_interval: Duration,
 ) -> Result<Value> {
     let started = tokio::time::Instant::now();
     let root = loop {
@@ -371,7 +574,7 @@ async fn wait_for_spawned_events(
         if started.elapsed() >= timeout {
             return Err(anyhow!("timed out waiting for transaction inclusion"));
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(poll_interval).await;
     };
 
     let mut events = Vec::new();
@@ -402,7 +605,7 @@ async fn wait_for_spawned_events(
             if started.elapsed() >= timeout {
                 return Err(anyhow!("timed out waiting for spawned event inclusion"));
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(poll_interval).await;
         };
         if let Some(spawned) = executed
             .get("executionStatus")
@@ -417,9 +620,18 @@ async fn wait_for_spawned_events(
     Ok(serde_json::json!({ "root": root, "events": events }))
 }
 
-async fn get_transaction(client: &Client, node: &str, shard_id: &str, tx_id: &str) -> Result<Option<Value>> {
+async fn get_transaction(
+    client: &Client,
+    node: &str,
+    shard_id: &str,
+    tx_id: &str,
+) -> Result<Option<Value>> {
     let url = format!("{node}/chain/shards/{shard_id}/transactions/{tx_id}");
-    let response = client.get(&url).send().await.with_context(|| format!("GET {url}"))?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
@@ -428,7 +640,12 @@ async fn get_transaction(client: &Client, node: &str, shard_id: &str, tx_id: &st
         let body = response.text().await.unwrap_or_default();
         return Err(anyhow!("get transaction failed with HTTP {status}: {body}"));
     }
-    Ok(Some(response.json().await.context("decode executed transaction json")?))
+    Ok(Some(
+        response
+            .json()
+            .await
+            .context("decode executed transaction json")?,
+    ))
 }
 
 fn ensure_execution_success(tree: &Value) -> Result<()> {
@@ -456,7 +673,10 @@ fn ensure_status_success(status: &Value, prefix: &str) -> Result<()> {
             .and_then(Value::as_str)
             .or_else(|| status.get("errorMessage").and_then(Value::as_str))
             .unwrap_or("unknown error");
-        return Err(anyhow!("{prefix}: {}", message.lines().next().unwrap_or(message)));
+        return Err(anyhow!(
+            "{prefix}: {}",
+            message.lines().next().unwrap_or(message)
+        ));
     }
     Ok(())
 }
@@ -503,6 +723,7 @@ mod tests {
             sender_address: Some("sender".to_string()),
             sender_key: Some("key".to_string()),
             confirm_timeout: Duration::from_secs(1),
+            poll_interval: Duration::from_millis(10),
             max_retries: 7,
         })
     }
@@ -569,6 +790,7 @@ mod tests {
             sender_address: None,
             sender_key: None,
             confirm_timeout: Duration::from_secs(1),
+            poll_interval: Duration::from_millis(10),
             max_retries: 1,
         });
 

@@ -1,0 +1,11 @@
+{
+  "nonce_b64": "rx1be2XUhFYtP9Mj",
+  "ciphertext_b64": "S0ZwH/VaA2nie0ZCt2MyH3BMqvSgXRAFwXdR08KcOxi5W+FgWFF9P5rn/80vIZqe+9WvwI0MNbt2l7pd3NSZyYMon+SAbZysbyy84VDj+j9eM6Y3X/x0TmqGEnB5OtqpSQRlRqLQ5rUhlojqG5qzBQ5U9+FJMHA+G0CMZMvBNu0KJ/mFsfJrRR0PBfani9XI3Cpsol6HQSZKCiCoXd+ynkvvnRaMvtcasIP4sZ30Spdx3LmSsCchmgChGNkethNQ0FcjFCDvmHiYTDXTjtqmklZU1SGjFwhTXPn6NRbm0NWNjUPqLDKyZGz8caUuoIuKBrpzC6DD+a5hqzdA8T9Pj6wlaRRoabaTY2ZzpDEa4ZUMhB5XJY6WfbsliKgHz7sPwEgq89I8DBkE1Ei9xryBu1H+F62XiPfrb0V7J2BJaa3YtxLjXLOGSMcJA1tRJOTNWKxv71WPhAA/cCx4VzQL3gbCCzqJQTFOx4AOhLsbscU=",
+  "metadata": {
+    "contract_address": "03d69b9a696147c8545aa580b2e528e69928d171e5",
+    "key_id": 63000,
+    "party_index": 3,
+    "public_key_hex": "0287105e859d2958b061f05b98fa83810262b1507a13a23b427cc1fbeabb99009b",
+    "runtime_version": "phase7-foundation"
+  }
+}

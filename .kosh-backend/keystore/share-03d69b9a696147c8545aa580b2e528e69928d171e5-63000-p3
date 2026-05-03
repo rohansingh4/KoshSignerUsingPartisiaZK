@@ -1,0 +1,11 @@
+{
+  "nonce_b64": "ZLfAbbmM69uNEjLo",
+  "ciphertext_b64": "VwrVqJkW7drY+o/J5FTFzLy3vMx7k0j0iiQ8tJTWYifgEj7wC+GinJ3C5x9S1xAqdKKiGEaGxWA/BySROHrgaKkaAKSr4UKHlNSbWviB6co=",
+  "metadata": {
+    "contract_address": "03d69b9a696147c8545aa580b2e528e69928d171e5",
+    "key_id": 63000,
+    "party_index": 3,
+    "public_key_hex": "0287105e859d2958b061f05b98fa83810262b1507a13a23b427cc1fbeabb99009b",
+    "runtime_version": "phase7-foundation"
+  }
+}

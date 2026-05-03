@@ -1,6 +1,7 @@
 use crate::{
     action_builders,
     app::{ActiveRuntimeState, AppState},
+    chain_relay::PipelineAction,
     evm_broadcaster::BroadcastSignedTxResult,
     jobs::{Job, JobKind, JobPhase},
     keystore::{KeyMaterialMetadata, PersistedPartyRuntime},
@@ -76,7 +77,24 @@ pub async fn start_reuse_sign_workflow(state: AppState, request: ReuseSignWorkfl
     let job_id = job.id;
     let jobs = state.jobs.clone();
     tokio::spawn(async move {
-        if let Err(err) = run_reuse_sign_workflow(state, job_id, request).await {
+        if let Err(err) = run_reuse_sign_workflow(state, job_id, request, false).await {
+            let _ = jobs
+                .set_failed(job_id, JobPhase::Failed, err.to_string())
+                .await;
+        }
+    });
+    job
+}
+
+pub async fn start_reuse_sign_v2_workflow(
+    state: AppState,
+    request: ReuseSignWorkflowRequest,
+) -> Job {
+    let job = state.jobs.create_job(JobKind::ReuseSign).await;
+    let job_id = job.id;
+    let jobs = state.jobs.clone();
+    tokio::spawn(async move {
+        if let Err(err) = run_reuse_sign_workflow(state, job_id, request, true).await {
             let _ = jobs
                 .set_failed(job_id, JobPhase::Failed, err.to_string())
                 .await;
@@ -102,12 +120,28 @@ async fn run_create_key_workflow(
     let mut resumed_from_existing = false;
     let mut existing_public_key_hex: Option<String> = None;
     if state.chain_relay.is_action_submission_configured().await {
-        if let Ok(contract_state) = state.chain_relay.get_contract_data(&request.contract_address).await {
-            if let Ok(status) = threshold_read::threshold_key_status(&contract_state, request.key_id).await {
+        if let Ok(contract_state) = state
+            .chain_relay
+            .get_contract_data(&request.contract_address)
+            .await
+        {
+            if let Ok(status) =
+                threshold_read::threshold_key_status(&contract_state, request.key_id).await
+            {
                 if status.exists && status.keygen_phase_discriminant.unwrap_or(0) >= 5 {
                     resumed_from_existing = true;
                     existing_public_key_hex = status.public_key_hex.clone();
-                    state.jobs.log(job_id, format!("resuming existing key {} from keygen phase {}", request.key_id, status.keygen_phase_discriminant.unwrap_or(0))).await;
+                    state
+                        .jobs
+                        .log(
+                            job_id,
+                            format!(
+                                "resuming existing key {} from keygen phase {}",
+                                request.key_id,
+                                status.keygen_phase_discriminant.unwrap_or(0)
+                            ),
+                        )
+                        .await;
                 }
             }
         }
@@ -121,10 +155,16 @@ async fn run_create_key_workflow(
     let mut shares = Vec::new();
     if !resumed_from_existing {
         if state.chain_relay.is_action_submission_configured().await {
-            let rpc = action_builders::build_dkg_create_key_rpc(request.key_id, request.num_parties);
+            let rpc =
+                action_builders::build_dkg_create_key_rpc(request.key_id, request.num_parties);
             let submitted = state
                 .chain_relay
-                .submit_action(&request.contract_address, "dkg_create_key", &rpc, DEFAULT_ACTION_GAS)
+                .submit_action(
+                    &request.contract_address,
+                    "dkg_create_key",
+                    &rpc,
+                    DEFAULT_ACTION_GAS,
+                )
                 .await?;
             state
                 .jobs
@@ -147,8 +187,11 @@ async fn run_create_key_workflow(
         }
 
         for party_index in 1..=request.num_parties {
-            let share =
-                dkg::generate_threshold_dkg_share(party_index, request.num_parties, seed.as_deref())?;
+            let share = dkg::generate_threshold_dkg_share(
+                party_index,
+                request.num_parties,
+                seed.as_deref(),
+            )?;
             state
                 .jobs
                 .log(
@@ -287,7 +330,11 @@ async fn run_create_key_workflow(
             }
         } else {
             for party_index in 1..=request.num_parties {
-                if keystore.load_party_runtime(&request.contract_address, request.key_id, party_index).await.is_ok() {
+                if keystore
+                    .load_party_runtime(&request.contract_address, request.key_id, party_index)
+                    .await
+                    .is_ok()
+                {
                     persisted += 1;
                 }
             }
@@ -359,6 +406,7 @@ async fn run_reuse_sign_workflow(
     state: AppState,
     job_id: uuid::Uuid,
     request: ReuseSignWorkflowRequest,
+    use_signing_bundle_v2: bool,
 ) -> Result<()> {
     recover_signing_session_if_needed(&state, job_id, &request.contract_address, request.key_id)
         .await?;
@@ -418,8 +466,45 @@ async fn run_reuse_sign_workflow(
         .map(|runtime| runtime.next_task_id)
         .max()
         .unwrap_or(0);
+    let mut task_id_used = task_id_used;
+    if state.chain_relay.is_action_submission_configured().await {
+        if let Ok(contract_state) = state
+            .chain_relay
+            .get_contract_data(&request.contract_address)
+            .await
+        {
+            if let Ok(Some(key_state)) =
+                threshold_read::decode_key_state(&contract_state, request.key_id).await
+            {
+                task_id_used = task_id_used.max(key_state.next_signing_task_id);
+                state
+                    .jobs
+                    .log(
+                        job_id,
+                        format!(
+                            "using task id {} (local_next={}, chain_next={})",
+                            task_id_used,
+                            runtimes
+                                .iter()
+                                .map(|runtime| runtime.next_task_id)
+                                .max()
+                                .unwrap_or(0),
+                            key_state.next_signing_task_id
+                        ),
+                    )
+                    .await;
+            }
+        }
+    }
 
     let msg_hash_bytes = hex::decode(request.msg_hash_hex.trim_start_matches("0x"))?;
+    let signing_inputs = party_inputs.clone();
+    let signing_msg_hash_hex = request.msg_hash_hex.clone();
+    let signing_session_id = request.session_id;
+    let signature_handle = tokio::task::spawn_blocking(move || {
+        gg20::gg20_sign_foundation(&signing_inputs, &signing_msg_hash_hex, signing_session_id)
+    });
+
     if state.chain_relay.is_action_submission_configured().await {
         state
             .jobs
@@ -436,7 +521,12 @@ async fn run_reuse_sign_workflow(
         );
         let submitted = state
             .chain_relay
-            .submit_action(&request.contract_address, "sign_message", &rpc, DEFAULT_ACTION_GAS)
+            .submit_action(
+                &request.contract_address,
+                "sign_message",
+                &rpc,
+                DEFAULT_ACTION_GAS,
+            )
             .await?;
         state
             .jobs
@@ -489,31 +579,47 @@ async fn run_reuse_sign_workflow(
             )
             .await;
 
-        for &party_index in &request.signing_parties {
-            let approval_hash = pqc::compute_pqc_approval_hash(
-                request.key_id,
-                task_id_used,
-                party_index,
-                &msg_hash_bytes,
-                &request.tx_tag,
-                &request.signing_parties,
-                &challenge,
-            );
-            let submit_pqc_rpc = action_builders::build_submit_pqc_approval_rpc(
-                request.key_id,
-                task_id_used,
-                party_index,
-                &approval_hash,
-            );
-            let approval_submitted = state
-                .chain_relay
-                .submit_action(
-                    &request.contract_address,
-                    "submit_pqc_approval",
-                    &submit_pqc_rpc,
-                    DEFAULT_ACTION_GAS,
+        let approval_actions = request
+            .signing_parties
+            .iter()
+            .map(|&party_index| {
+                let approval_hash = pqc::compute_pqc_approval_hash(
+                    request.key_id,
+                    task_id_used,
+                    party_index,
+                    &msg_hash_bytes,
+                    &request.tx_tag,
+                    &request.signing_parties,
+                    &challenge,
+                );
+                (
+                    party_index,
+                    PipelineAction {
+                        action: "submit_pqc_approval".to_string(),
+                        payload: action_builders::build_submit_pqc_approval_rpc(
+                            request.key_id,
+                            task_id_used,
+                            party_index,
+                            &approval_hash,
+                        ),
+                        gas_cost: DEFAULT_ACTION_GAS,
+                    },
                 )
-                .await?;
+            })
+            .collect::<Vec<_>>();
+        let approval_submissions = submit_pipeline_with_fallback(
+            &state,
+            &request.contract_address,
+            approval_actions
+                .iter()
+                .map(|(_, action)| action.clone())
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+        for ((party_index, _), approval_submitted) in approval_actions
+            .iter()
+            .zip(approval_submissions.into_iter())
+        {
             state
                 .jobs
                 .log(
@@ -595,138 +701,89 @@ async fn run_reuse_sign_workflow(
         .set_running(
             job_id,
             JobPhase::RunningMta,
-            "running GG20 signing foundation",
+            "finalizing GG20 signing foundation",
         )
         .await;
-    let signature =
-        gg20::gg20_sign_foundation(&party_inputs, &request.msg_hash_hex, request.session_id)?;
+    let signature = signature_handle
+        .await
+        .map_err(|err| anyhow::anyhow!("GG20 signing task failed: {err}"))??;
 
     let combined_s_hex = gg20::gg20_combine_partials(&signature.partials)?;
     if let Some(stored_public_key_hex) = public_key_hex.clone() {
         let derived_public_key_hex = gg20::derive_public_key_from_shares(&party_inputs)?;
-        state.jobs.log(job_id, format!("derived pubkey from adjusted shares matches stored={} derived={} stored={}", derived_public_key_hex.eq_ignore_ascii_case(&stored_public_key_hex), derived_public_key_hex, stored_public_key_hex)).await;
-        let local_verify = gg20::gg20_verify_locally(&stored_public_key_hex, &request.msg_hash_hex, &signature.r_hex, &combined_s_hex)?;
-        state.jobs.log(job_id, format!("local GG20 verification before on-chain submit verified={} r={} s={}", local_verify, signature.r_hex, combined_s_hex)).await;
-    }
-
-    if state.chain_relay.is_action_submission_configured().await {
-        for delta in &signature.deltas {
-            let delta_bytes = hex::decode(&delta.delta_i_hex)?;
-            let commit_hash = sha2::Sha256::digest(&delta_bytes);
-            let commit_rpc = action_builders::build_commit_delta_rpc(
-                request.key_id,
-                delta.party_index,
-                commit_hash.as_slice(),
-            );
-            let committed = state
-                .chain_relay
-                .submit_action(
-                    &request.contract_address,
-                    "commit_delta",
-                    &commit_rpc,
-                    DEFAULT_ACTION_GAS,
-                )
-                .await?;
-            state
-                .jobs
-                .log(
-                    job_id,
-                    format!(
-                        "submitted commit_delta for party {} on {} tx {}",
-                        delta.party_index, committed.node_url, committed.tx_hash
-                    ),
-                )
-                .await;
-
-            let delta_rpc = action_builders::build_submit_delta_rpc(
-                request.key_id,
-                delta.party_index,
-                &delta_bytes,
-            );
-            let submitted = state
-                .chain_relay
-                .submit_action(
-                    &request.contract_address,
-                    "submit_delta",
-                    &delta_rpc,
-                    DEFAULT_ACTION_GAS,
-                )
-                .await?;
-            state
-                .jobs
-                .log(
-                    job_id,
-                    format!(
-                        "submitted submit_delta for party {} on {} tx {}",
-                        delta.party_index, submitted.node_url, submitted.tx_hash
-                    ),
-                )
-                .await;
-        }
-
-        for (idx, gamma_point_hex) in signature.gamma_points_hex.iter().enumerate() {
-            let party_index = request.signing_parties[idx];
-            let gamma_rpc = action_builders::build_submit_gamma_point_rpc(
-                request.key_id,
-                party_index,
-                &hex::decode(gamma_point_hex)?,
-            );
-            let gamma_submitted = state
-                .chain_relay
-                .submit_action(
-                    &request.contract_address,
-                    "submit_gamma_point",
-                    &gamma_rpc,
-                    DEFAULT_ACTION_GAS,
-                )
-                .await?;
-            state
-                .jobs
-                .log(
-                    job_id,
-                    format!(
-                        "submitted submit_gamma_point for party {} on {} tx {}",
-                        party_index, gamma_submitted.node_url, gamma_submitted.tx_hash
-                    ),
-                )
-                .await;
-        }
-
-        let finalize_r_rpc = action_builders::build_gg20_finalize_r_rpc(request.key_id);
-        let finalized_r = state
-            .chain_relay
-            .submit_action(
-                &request.contract_address,
-                "gg20_finalize_r",
-                &finalize_r_rpc,
-                DEFAULT_ACTION_GAS,
-            )
-            .await?;
         state
             .jobs
             .log(
                 job_id,
                 format!(
-                    "submitted gg20_finalize_r on {} tx {}",
-                    finalized_r.node_url, finalized_r.tx_hash
+                    "derived pubkey from adjusted shares matches stored={} derived={} stored={}",
+                    derived_public_key_hex.eq_ignore_ascii_case(&stored_public_key_hex),
+                    derived_public_key_hex,
+                    stored_public_key_hex
                 ),
             )
             .await;
+        let local_verify = gg20::gg20_verify_locally(
+            &stored_public_key_hex,
+            &request.msg_hash_hex,
+            &signature.r_hex,
+            &combined_s_hex,
+        )?;
+        state
+            .jobs
+            .log(
+                job_id,
+                format!(
+                    "local GG20 verification before on-chain submit verified={} r={} s={}",
+                    local_verify, signature.r_hex, combined_s_hex
+                ),
+            )
+            .await;
+    }
 
-        for partial in &signature.partials {
-            let partial_bytes = hex::decode(&partial.s_i_hex)?;
-            let commit_hash = sha2::Sha256::digest(&partial_bytes);
-            let commit_rpc = action_builders::build_commit_partial_sig_rpc(
+    if state.chain_relay.is_action_submission_configured().await {
+        if use_signing_bundle_v2 {
+            let mut delta_values = Vec::with_capacity(request.signing_parties.len());
+            let mut gamma_points = Vec::with_capacity(request.signing_parties.len());
+            let mut partial_sigs = Vec::with_capacity(request.signing_parties.len());
+
+            for (position, party_index) in request.signing_parties.iter().copied().enumerate() {
+                let delta = signature
+                    .deltas
+                    .iter()
+                    .find(|delta| delta.party_index == party_index)
+                    .ok_or_else(|| anyhow::anyhow!("missing delta for party {}", party_index))?;
+                let partial = signature
+                    .partials
+                    .iter()
+                    .find(|partial| partial.party_index == party_index)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("missing partial signature for party {}", party_index)
+                    })?;
+                let gamma_point_hex =
+                    signature.gamma_points_hex.get(position).ok_or_else(|| {
+                        anyhow::anyhow!("missing gamma point for party {}", party_index)
+                    })?;
+
+                delta_values.push(hex::decode(&delta.delta_i_hex)?);
+                gamma_points.push(hex::decode(gamma_point_hex)?);
+                partial_sigs.push(hex::decode(&partial.s_i_hex)?);
+            }
+
+            let rpc = action_builders::build_submit_signing_bundle_v2_rpc(
                 request.key_id,
-                partial.party_index,
-                commit_hash.as_slice(),
+                task_id_used,
+                &request.signing_parties,
+                &delta_values,
+                &gamma_points,
+                &partial_sigs,
             );
-            let committed = state
+            let submitted = state
                 .chain_relay
                 .submit_action(
                     &request.contract_address,
-                    "commit_partial_sig",
-                    &commit_rpc,
+                    "submit_signing_bundle_v2",
+                    &rpc,
                     DEFAULT_ACTION_GAS,
                 )
                 .await?;
@@ -735,23 +792,150 @@ async fn run_reuse_sign_workflow(
                 .log(
                     job_id,
                     format!(
-                        "submitted commit_partial_sig for party {} on {} tx {}",
-                        partial.party_index, committed.node_url, committed.tx_hash
+                        "submitted submit_signing_bundle_v2 on {} tx {}",
+                        submitted.node_url, submitted.tx_hash
                     ),
                 )
                 .await;
+        } else {
+            let delta_commits = signature
+                .deltas
+                .iter()
+                .map(|delta| {
+                    let delta_bytes = hex::decode(&delta.delta_i_hex)?;
+                    let commit_hash = sha2::Sha256::digest(&delta_bytes);
+                    Ok::<_, anyhow::Error>((
+                        delta.party_index,
+                        PipelineAction {
+                            action: "commit_delta".to_string(),
+                            payload: action_builders::build_commit_delta_rpc(
+                                request.key_id,
+                                delta.party_index,
+                                commit_hash.as_slice(),
+                            ),
+                            gas_cost: DEFAULT_ACTION_GAS,
+                        },
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let committed_deltas = submit_pipeline_with_fallback(
+                &state,
+                &request.contract_address,
+                delta_commits
+                    .iter()
+                    .map(|(_, action)| action.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+            for ((party_index, _), committed) in
+                delta_commits.iter().zip(committed_deltas.into_iter())
+            {
+                state
+                    .jobs
+                    .log(
+                        job_id,
+                        format!(
+                            "submitted commit_delta for party {} on {} tx {}",
+                            party_index, committed.node_url, committed.tx_hash
+                        ),
+                    )
+                    .await;
+            }
 
-            let partial_rpc = action_builders::build_submit_partial_sig_rpc(
-                request.key_id,
-                partial.party_index,
-                &partial_bytes,
-            );
-            let revealed = state
+            let delta_submissions = signature
+                .deltas
+                .iter()
+                .map(|delta| {
+                    let delta_bytes = hex::decode(&delta.delta_i_hex)?;
+                    Ok::<_, anyhow::Error>((
+                        delta.party_index,
+                        PipelineAction {
+                            action: "submit_delta".to_string(),
+                            payload: action_builders::build_submit_delta_rpc(
+                                request.key_id,
+                                delta.party_index,
+                                &delta_bytes,
+                            ),
+                            gas_cost: DEFAULT_ACTION_GAS,
+                        },
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let submitted_deltas = submit_pipeline_with_fallback(
+                &state,
+                &request.contract_address,
+                delta_submissions
+                    .iter()
+                    .map(|(_, action)| action.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+            for ((party_index, _), submitted) in
+                delta_submissions.iter().zip(submitted_deltas.into_iter())
+            {
+                state
+                    .jobs
+                    .log(
+                        job_id,
+                        format!(
+                            "submitted submit_delta for party {} on {} tx {}",
+                            party_index, submitted.node_url, submitted.tx_hash
+                        ),
+                    )
+                    .await;
+            }
+
+            let gamma_actions = signature
+                .gamma_points_hex
+                .iter()
+                .enumerate()
+                .map(|(idx, gamma_point_hex)| {
+                    let party_index = request.signing_parties[idx];
+                    Ok::<_, anyhow::Error>((
+                        party_index,
+                        PipelineAction {
+                            action: "submit_gamma_point".to_string(),
+                            payload: action_builders::build_submit_gamma_point_rpc(
+                                request.key_id,
+                                party_index,
+                                &hex::decode(gamma_point_hex)?,
+                            ),
+                            gas_cost: DEFAULT_ACTION_GAS,
+                        },
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let submitted_gammas = submit_pipeline_with_fallback(
+                &state,
+                &request.contract_address,
+                gamma_actions
+                    .iter()
+                    .map(|(_, action)| action.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+            for ((party_index, _), gamma_submitted) in
+                gamma_actions.iter().zip(submitted_gammas.into_iter())
+            {
+                state
+                    .jobs
+                    .log(
+                        job_id,
+                        format!(
+                            "submitted submit_gamma_point for party {} on {} tx {}",
+                            party_index, gamma_submitted.node_url, gamma_submitted.tx_hash
+                        ),
+                    )
+                    .await;
+            }
+
+            let finalize_r_rpc = action_builders::build_gg20_finalize_r_rpc(request.key_id);
+            let finalized_r = state
                 .chain_relay
                 .submit_action(
                     &request.contract_address,
-                    "submit_partial_sig",
-                    &partial_rpc,
+                    "gg20_finalize_r",
+                    &finalize_r_rpc,
                     DEFAULT_ACTION_GAS,
                 )
                 .await?;
@@ -760,11 +944,99 @@ async fn run_reuse_sign_workflow(
                 .log(
                     job_id,
                     format!(
-                        "submitted submit_partial_sig for party {} on {} tx {}",
-                        partial.party_index, revealed.node_url, revealed.tx_hash
+                        "submitted gg20_finalize_r on {} tx {}",
+                        finalized_r.node_url, finalized_r.tx_hash
                     ),
                 )
                 .await;
+
+            let partial_commits = signature
+                .partials
+                .iter()
+                .map(|partial| {
+                    let partial_bytes = hex::decode(&partial.s_i_hex)?;
+                    let commit_hash = sha2::Sha256::digest(&partial_bytes);
+                    Ok::<_, anyhow::Error>((
+                        partial.party_index,
+                        PipelineAction {
+                            action: "commit_partial_sig".to_string(),
+                            payload: action_builders::build_commit_partial_sig_rpc(
+                                request.key_id,
+                                partial.party_index,
+                                commit_hash.as_slice(),
+                            ),
+                            gas_cost: DEFAULT_ACTION_GAS,
+                        },
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let committed_partials = submit_pipeline_with_fallback(
+                &state,
+                &request.contract_address,
+                partial_commits
+                    .iter()
+                    .map(|(_, action)| action.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+            for ((party_index, _), committed) in
+                partial_commits.iter().zip(committed_partials.into_iter())
+            {
+                state
+                    .jobs
+                    .log(
+                        job_id,
+                        format!(
+                            "submitted commit_partial_sig for party {} on {} tx {}",
+                            party_index, committed.node_url, committed.tx_hash
+                        ),
+                    )
+                    .await;
+            }
+
+            let partial_submissions = signature
+                .partials
+                .iter()
+                .map(|partial| {
+                    let partial_bytes = hex::decode(&partial.s_i_hex)?;
+                    Ok::<_, anyhow::Error>((
+                        partial.party_index,
+                        PipelineAction {
+                            action: "submit_partial_sig".to_string(),
+                            payload: action_builders::build_submit_partial_sig_rpc(
+                                request.key_id,
+                                partial.party_index,
+                                &partial_bytes,
+                            ),
+                            gas_cost: DEFAULT_ACTION_GAS,
+                        },
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let submitted_partials = submit_pipeline_with_fallback(
+                &state,
+                &request.contract_address,
+                partial_submissions
+                    .iter()
+                    .map(|(_, action)| action.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+            for ((party_index, _), revealed) in partial_submissions
+                .iter()
+                .zip(submitted_partials.into_iter())
+            {
+                state
+                    .jobs
+                    .log(
+                        job_id,
+                        format!(
+                            "submitted submit_partial_sig for party {} on {} tx {}",
+                            party_index, revealed.node_url, revealed.tx_hash
+                        ),
+                    )
+                    .await;
+            }
         }
     }
 
@@ -878,7 +1150,10 @@ async fn ensure_party_operational_readiness(
     let Some(keystore) = &state.keystore else {
         state
             .jobs
-            .log(job_id, "keystore unavailable; skipping party readiness registration")
+            .log(
+                job_id,
+                "keystore unavailable; skipping party readiness registration",
+            )
             .await;
         return Ok(());
     };
@@ -888,12 +1163,38 @@ async fn ensure_party_operational_readiness(
         .as_deref()
         .context("PARTISIA_SENDER_ADDRESS is required for party readiness registration")?;
     let encoded_address = parse_partisia_address(sender_address)?;
+    let existing_key_state = match state.chain_relay.get_contract_data(contract_address).await {
+        Ok(contract_state) => threshold_read::decode_key_state(&contract_state, key_id)
+            .await
+            .ok()
+            .flatten(),
+        Err(_) => None,
+    };
 
     for party_index in 1..=num_parties {
+        if existing_key_state
+            .as_ref()
+            .is_some_and(|key_state| key_state.is_party_ready_for_signing(party_index))
+        {
+            state
+                .jobs
+                .log(
+                    job_id,
+                    format!(
+                        "party {} readiness already satisfied on-chain; skipping registration",
+                        party_index
+                    ),
+                )
+                .await;
+            continue;
+        }
         let identity = PqcIdentity::load_or_generate(keystore, party_index, public_key_hex).await?;
 
-        let party_rpc =
-            action_builders::build_register_party_address_rpc(key_id, party_index, &encoded_address);
+        let party_rpc = action_builders::build_register_party_address_rpc(
+            key_id,
+            party_index,
+            &encoded_address,
+        );
         let party_registered = submit_action_idempotent(
             state,
             contract_address,
@@ -975,6 +1276,18 @@ async fn recover_signing_session_if_needed(
         return Ok(());
     }
 
+    if let Ok(contract_state) = state.chain_relay.get_contract_data(contract_address).await {
+        if let Ok(status) = threshold_read::threshold_key_status(&contract_state, key_id).await {
+            if status.signing_phase_discriminant == Some(0) {
+                state
+                    .jobs
+                    .log(job_id, "signing phase already idle; skipping abort_signing")
+                    .await;
+                return Ok(());
+            }
+        }
+    }
+
     state
         .jobs
         .set_running(
@@ -987,7 +1300,12 @@ async fn recover_signing_session_if_needed(
     let abort_rpc = action_builders::build_abort_signing_rpc(key_id);
     match state
         .chain_relay
-        .submit_action(contract_address, "abort_signing", &abort_rpc, DEFAULT_ACTION_GAS)
+        .submit_action(
+            contract_address,
+            "abort_signing",
+            &abort_rpc,
+            DEFAULT_ACTION_GAS,
+        )
         .await
     {
         Ok(submitted) => {
@@ -1030,15 +1348,28 @@ async fn submit_action_idempotent(
         .await
     {
         Ok(result) => Ok(result),
-        Err(err) if is_idempotent_success_error(action, &err.to_string()) => Ok(
-            crate::chain_relay::SubmitActionResult {
+        Err(err) if is_idempotent_success_error(action, &err.to_string()) => {
+            Ok(crate::chain_relay::SubmitActionResult {
                 tx_hash: "already_satisfied".to_string(),
                 node_url: state.chain_relay.active_node().await.unwrap_or_default(),
                 destination_shard_id: "Shard0".to_string(),
-            },
-        ),
+            })
+        }
         Err(err) => Err(err),
     }
+}
+
+async fn submit_pipeline_with_fallback(
+    state: &AppState,
+    contract_address: &str,
+    actions: Vec<PipelineAction>,
+) -> Result<Vec<crate::chain_relay::SubmitActionResult>> {
+    // A partially successful pipeline must not be replayed sequentially, or we can
+    // resubmit actions that already mutated on-chain state.
+    state
+        .chain_relay
+        .submit_action_pipeline(contract_address, &actions)
+        .await
 }
 
 fn is_no_active_signing_error(message: &str) -> bool {
@@ -1068,8 +1399,8 @@ fn parse_partisia_address(input: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        start_create_key_workflow, start_reuse_sign_workflow, CreateKeyWorkflowRequest,
-        ReuseSignWorkflowRequest,
+        start_create_key_workflow, start_reuse_sign_v2_workflow, start_reuse_sign_workflow,
+        CreateKeyWorkflowRequest, ReuseSignWorkflowRequest,
     };
     use crate::{
         app::AppState,
@@ -1111,6 +1442,7 @@ mod tests {
             partisia_sender_key: None,
             partisia_sender_address: None,
             partisia_confirm_timeout: Duration::from_secs(1),
+            partisia_poll_interval: Duration::from_millis(10),
             partisia_max_retries: 1,
             sepolia_rpc_url: None,
             sepolia_chain_id: 11155111,
@@ -1133,6 +1465,7 @@ mod tests {
                 sender_address: None,
                 sender_key: None,
                 confirm_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
                 max_retries: 1,
             }),
             evm_broadcaster: EvmBroadcaster::new(EvmBroadcasterConfig {
@@ -1193,8 +1526,57 @@ mod tests {
         assert_eq!(runtime.next_task_id, 1);
     }
 
+    #[tokio::test]
+    async fn create_key_then_reuse_sign_v2_persists_and_advances_task_id() {
+        let state = test_state();
+        let create_job = start_create_key_workflow(
+            state.clone(),
+            CreateKeyWorkflowRequest {
+                contract_address: "contract-x".to_string(),
+                key_id: 8,
+                num_parties: 3,
+                seed_hex: Some("02".repeat(32)),
+            },
+        )
+        .await;
+
+        let created = wait_for_job(&state, create_job.id).await;
+        assert!(matches!(created.status, JobStatus::Completed));
+
+        let sign_job = start_reuse_sign_v2_workflow(
+            state.clone(),
+            ReuseSignWorkflowRequest {
+                contract_address: "contract-x".to_string(),
+                key_id: 8,
+                tx_tag: "eth_transfer".to_string(),
+                signing_parties: vec![1, 2],
+                threshold: 2,
+                msg_hash_hex: "0xc9b03991a1a3fa025eebe1fe2c9186e0a4d1b275f5eb8369e4f4429416655735"
+                    .to_string(),
+                session_id: Some(1),
+                signed_tx_hex: None,
+            },
+        )
+        .await;
+
+        let signed = wait_for_job(&state, sign_job.id).await;
+        assert!(matches!(signed.status, JobStatus::Completed));
+        let result = signed.result.unwrap();
+        assert_eq!(result["task_id_used"], 0);
+        assert_eq!(result["next_task_id"], 1);
+
+        let runtime = state
+            .keystore
+            .as_ref()
+            .unwrap()
+            .load_party_runtime("contract-x", 8, 1)
+            .await
+            .unwrap();
+        assert_eq!(runtime.next_task_id, 1);
+    }
+
     async fn wait_for_job(state: &AppState, job_id: uuid::Uuid) -> crate::jobs::Job {
-        for _ in 0..100 {
+        for _ in 0..4000 {
             let job = state.jobs.get_job(job_id).await.unwrap();
             if !matches!(job.status, JobStatus::Queued | JobStatus::Running) {
                 return job;

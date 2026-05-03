@@ -13,6 +13,7 @@ pub struct Config {
     pub partisia_sender_key: Option<String>,
     pub partisia_sender_address: Option<String>,
     pub partisia_confirm_timeout: Duration,
+    pub partisia_poll_interval: Duration,
     pub partisia_max_retries: u32,
     pub sepolia_rpc_url: Option<String>,
     pub sepolia_chain_id: u64,
@@ -59,6 +60,12 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30_000),
         );
+        let partisia_poll_interval = Duration::from_millis(
+            env::var("KOSH_PARTISIA_POLL_INTERVAL_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(500),
+        );
         let partisia_max_retries = env::var("PARTISIA_MAX_RETRIES")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -82,6 +89,7 @@ impl Config {
             partisia_sender_key,
             partisia_sender_address,
             partisia_confirm_timeout,
+            partisia_poll_interval,
             partisia_max_retries,
             sepolia_rpc_url,
             sepolia_chain_id,

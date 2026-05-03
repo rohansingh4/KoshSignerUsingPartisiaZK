@@ -42,6 +42,15 @@ pub struct EngineConfig {
     pub address: Address,
 }
 
+/// Bundled signing payload for one party in the low-latency v2 path.
+#[derive(ReadWriteState, ReadWriteRPC, CreateTypeSpec, Clone)]
+pub struct SigningPartyBundleV2 {
+    pub party_index: u8,
+    pub delta_bytes: Vec<u8>,
+    pub gamma_point: Vec<u8>,
+    pub partial_s: Vec<u8>,
+}
+
 /// The top-level contract state.
 #[state]
 pub struct ContractState {
@@ -1982,6 +1991,215 @@ pub fn gg20_finalize_r(
     key_state.ts_num_parties = key_state.gg20_num_parties;
     key_state.signing_phase = ZkSigningPhase::ThresholdSigning { task_id };
     key_state.signing_round += 1;
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+/// Low-latency v2 signing submission.
+///
+/// Preserves the same signing semantics as the v1 GG20 flow, but compresses:
+/// - delta commitments
+/// - delta submissions
+/// - gamma submissions
+/// - R finalization
+/// - partial signature commitments
+/// - partial signature submissions
+///
+/// into a single owner-authorized contract action after PQC approval is finalized
+/// and the GG20 signing session is already active.
+#[action(shortname = 0x58, zk = true)]
+pub fn submit_signing_bundle_v2(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    task_id: u32,
+    bundles: Vec<SigningPartyBundleV2>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    state.assert_owner(&ctx.sender);
+
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(key_state.gg20_active, "No GG20 session active");
+    assert_eq!(
+        key_state.gg20_task_id, task_id,
+        "GG20 session is not bound to this signing task"
+    );
+    assert!(
+        matches!(
+            key_state.signing_phase,
+            ZkSigningPhase::ThresholdSigning { .. }
+        ) || key_state.gg20_active,
+        "GG20 signing session is not active"
+    );
+    assert!(
+        bundles.len() as u8 == key_state.gg20_num_parties,
+        "Expected {} signing bundles, got {}",
+        key_state.gg20_num_parties,
+        bundles.len()
+    );
+
+    let bundle_indices: Vec<u8> = bundles.iter().map(|bundle| bundle.party_index).collect();
+    assert!(
+        same_party_set(&bundle_indices, &key_state.gg20_signing_parties),
+        "Bundled party set does not match the active signing subset"
+    );
+
+    for bundle in &bundles {
+        assert!(
+            key_state.is_active_signing_party(bundle.party_index),
+            "Party {} is not part of the active signing subset",
+            bundle.party_index
+        );
+        assert_eq!(bundle.delta_bytes.len(), 32, "Delta must be 32 bytes");
+        assert_eq!(bundle.gamma_point.len(), 33, "Gamma point must be 33 bytes");
+        assert_eq!(
+            bundle.partial_s.len(),
+            32,
+            "Partial signature must be 32 bytes"
+        );
+        assert!(
+            bundle_indices
+                .iter()
+                .filter(|&&idx| idx == bundle.party_index)
+                .count()
+                == 1,
+            "Bundled party set contains duplicate party index {}",
+            bundle.party_index
+        );
+        VerifyingKey::from_sec1_bytes(&bundle.gamma_point).expect("Invalid gamma point");
+    }
+
+    key_state.gg20_delta_indices.clear();
+    key_state.gg20_delta_values.clear();
+    key_state.gg20_delta_commit_indices.clear();
+    key_state.gg20_delta_commit_hashes.clear();
+    key_state.gg20_gamma_indices.clear();
+    key_state.gg20_gamma_points.clear();
+    key_state.ps_commit_indices.clear();
+    key_state.ps_commit_hashes.clear();
+    key_state.ts_partial_indices.clear();
+    key_state.ts_partial_values.clear();
+
+    for bundle in &bundles {
+        key_state.gg20_delta_commit_indices.push(bundle.party_index);
+        key_state
+            .gg20_delta_commit_hashes
+            .push(dkg::sha256(&bundle.delta_bytes).to_vec());
+        key_state.ps_commit_indices.push(bundle.party_index);
+        key_state
+            .ps_commit_hashes
+            .push(dkg::sha256(&bundle.partial_s).to_vec());
+    }
+
+    for bundle in &bundles {
+        key_state.gg20_delta_indices.push(bundle.party_index);
+        key_state.gg20_delta_values.push(bundle.delta_bytes.clone());
+        key_state.gg20_gamma_indices.push(bundle.party_index);
+        key_state.gg20_gamma_points.push(bundle.gamma_point.clone());
+    }
+
+    // Inline gg20_finalize_r semantics.
+    use k256::elliptic_curve::ff::PrimeField;
+    use k256::elliptic_curve::sec1::FromEncodedPoint;
+    use k256::EncodedPoint;
+    use k256::{AffinePoint as K256Affine, FieldBytes, ProjectivePoint as K256Proj, Scalar};
+
+    let mut delta = Scalar::ZERO;
+    for dv in &key_state.gg20_delta_values {
+        let mut fb = FieldBytes::default();
+        fb.copy_from_slice(dv);
+        let s = Option::<Scalar>::from(Scalar::from_repr(fb)).expect("Invalid delta scalar");
+        delta = delta + s;
+    }
+
+    let mut gamma_combined = K256Proj::IDENTITY;
+    for gp in &key_state.gg20_gamma_points {
+        let encoded = EncodedPoint::from_bytes(gp).expect("Invalid gamma point encoding");
+        let affine = Option::<K256Affine>::from(K256Affine::from_encoded_point(&encoded))
+            .expect("Invalid gamma affine point");
+        gamma_combined = gamma_combined + K256Proj::from(affine);
+    }
+
+    let delta_inv = delta.invert();
+    assert!(bool::from(delta_inv.is_some()), "Delta has no inverse");
+    let delta_inv = delta_inv.unwrap();
+    let r_point = gamma_combined * delta_inv;
+    let r_affine = r_point.to_affine();
+    let r_encoded = EncodedPoint::from(r_affine);
+    let r_compressed = r_encoded.compress();
+    let r_bytes_full = r_compressed.as_bytes();
+    let r_bytes = r_bytes_full[1..33].to_vec();
+    let recovery_id = if r_bytes_full[0] == 0x02 { 0u8 } else { 1u8 };
+
+    key_state.gg20_r_bytes = r_bytes.clone();
+    key_state.ts_task_id = task_id;
+    key_state.ts_active = true;
+    key_state.ts_r_bytes = r_bytes;
+    key_state.ts_recovery_id = recovery_id;
+    key_state.ts_num_parties = key_state.gg20_num_parties;
+    key_state.signing_phase = ZkSigningPhase::ThresholdSigning { task_id };
+    key_state.signing_round += 1;
+
+    for bundle in &bundles {
+        key_state.ts_partial_indices.push(bundle.party_index);
+        key_state.ts_partial_values.push(bundle.partial_s.clone());
+    }
+
+    let (combined_s, was_negated) =
+        combine_partial_signatures_with_flag(&key_state.ts_partial_values);
+    let recovery_id = if was_negated {
+        key_state.ts_recovery_id ^ 1
+    } else {
+        key_state.ts_recovery_id
+    };
+
+    let mut signature = Vec::with_capacity(65);
+    signature.extend_from_slice(&key_state.ts_r_bytes);
+    signature.extend_from_slice(&combined_s);
+    signature.push(recovery_id);
+
+    let public_key = key_state.public_key.clone().expect("Public key missing");
+    let verifying_key =
+        VerifyingKey::from_sec1_bytes(&public_key).expect("Stored public key is not valid");
+    let sig64 = &signature[0..64];
+    let parsed_sig = Signature::try_from(sig64).expect("Failed to parse combined signature");
+
+    let mut info = key_state
+        .signing_information
+        .get(&task_id)
+        .expect("Signing task not found");
+
+    verifying_key
+        .verify_prehash(&info.message_hash, &parsed_sig)
+        .expect("Combined threshold signature verification failed");
+
+    info.recovery_id = recovery_id;
+    info.signature = Some(signature);
+    info.verified = true;
+    key_state.signing_information.insert(task_id, info);
+
+    key_state.ts_active = false;
+    key_state.gg20_active = false;
+    key_state.gg20_task_id = 0;
+    key_state.gg20_policy_id = 0;
+    key_state.gg20_required_parties.clear();
+    key_state.gg20_min_signers = 0;
+    key_state.gg20_signing_parties.clear();
+    key_state.gg20_num_parties = 0;
+    key_state.reset_pqc_approval_session();
+    key_state.ts_partial_indices.clear();
+    key_state.ts_partial_values.clear();
+    key_state.signing_phase = ZkSigningPhase::Complete { task_id };
+    key_state
+        .pending_sign_requests
+        .retain(|r| r.task_id != task_id);
+
+    if !key_state.pending_sign_requests.is_empty() {
+        key_state.start_next_signing();
+    } else {
+        key_state.signing_phase = ZkSigningPhase::Idle {};
+    }
 
     state.keys.insert(key_id, key_state);
     (state, vec![], vec![])

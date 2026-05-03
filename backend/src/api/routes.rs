@@ -92,6 +92,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/workflows/reuse-sign",
             post(start_reuse_sign_workflow),
         )
+        .route(
+            "/api/v2/workflows/reuse-sign",
+            post(start_reuse_sign_v2_workflow),
+        )
         .route("/api/v1/evm/build-eth-transfer", post(build_eth_transfer))
         .route(
             "/api/v1/evm/broadcast-signed",
@@ -522,6 +526,14 @@ async fn start_reuse_sign_workflow(
     Json(payload): Json<StartReuseSignWorkflowRequest>,
 ) -> impl IntoResponse {
     let job = orchestrator::start_reuse_sign_workflow(state, payload).await;
+    (StatusCode::CREATED, Json(CreateJobResponse { job })).into_response()
+}
+
+async fn start_reuse_sign_v2_workflow(
+    State(state): State<AppState>,
+    Json(payload): Json<StartReuseSignWorkflowRequest>,
+) -> impl IntoResponse {
+    let job = orchestrator::start_reuse_sign_v2_workflow(state, payload).await;
     (StatusCode::CREATED, Json(CreateJobResponse { job })).into_response()
 }
 

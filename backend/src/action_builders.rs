@@ -13,6 +13,9 @@ fn encode_vec(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+use kosh_zk_signer::SigningPartyBundleV2;
+use pbc_traits::WriteRPC;
+
 fn encode_action(shortname: u16, args: &[u8]) -> Vec<u8> {
     let mut wasm_rpc = if shortname <= 0xff {
         vec![shortname as u8]
@@ -183,16 +186,48 @@ pub fn build_submit_partial_sig_rpc(key_id: u32, party_index: u8, partial_s: &[u
     encode_action(0x31, &args)
 }
 
+pub fn build_submit_signing_bundle_v2_rpc(
+    key_id: u32,
+    task_id: u32,
+    party_indices: &[u8],
+    delta_values: &[Vec<u8>],
+    gamma_points: &[Vec<u8>],
+    partial_sigs: &[Vec<u8>],
+) -> Vec<u8> {
+    assert_eq!(party_indices.len(), delta_values.len(), "party_indices/delta_values length mismatch");
+    assert_eq!(party_indices.len(), gamma_points.len(), "party_indices/gamma_points length mismatch");
+    assert_eq!(party_indices.len(), partial_sigs.len(), "party_indices/partial_sigs length mismatch");
+
+    let bundles: Vec<SigningPartyBundleV2> = party_indices
+        .iter()
+        .enumerate()
+        .map(|(idx, party_index)| SigningPartyBundleV2 {
+            party_index: *party_index,
+            delta_bytes: delta_values[idx].clone(),
+            gamma_point: gamma_points[idx].clone(),
+            partial_s: partial_sigs[idx].clone(),
+        })
+        .collect();
+
+    let mut args = encode_u32_be(key_id);
+    args.extend_from_slice(&encode_u32_be(task_id));
+    bundles
+        .rpc_write_to(&mut args)
+        .expect("serializing signing bundle v2 rpc should not fail");
+    encode_action(0x58, &args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         build_commit_delta_rpc, build_commit_partial_sig_rpc, build_dkg_commit_rpc,
         build_dkg_complete_keygen_rpc, build_dkg_create_key_rpc, build_dkg_finalize_rpc,
-        build_dkg_reveal_rpc, build_gg20_finalize_r_rpc, build_gg20_start_signing_rpc,
-        build_register_dilithium_pubkey_rpc, build_register_kyber_pubkey_rpc,
-        build_register_party_address_rpc, build_sign_message_rpc, build_start_pqc_approval_session_rpc,
-        build_submit_pqc_approval_rpc, build_finalize_pqc_approval_rpc, build_submit_delta_rpc,
-        build_submit_gamma_point_rpc, build_submit_partial_sig_rpc,
+        build_dkg_reveal_rpc, build_finalize_pqc_approval_rpc, build_gg20_finalize_r_rpc,
+        build_gg20_start_signing_rpc, build_register_dilithium_pubkey_rpc,
+        build_register_kyber_pubkey_rpc, build_register_party_address_rpc, build_sign_message_rpc,
+        build_start_pqc_approval_session_rpc, build_submit_delta_rpc, build_submit_gamma_point_rpc,
+        build_submit_partial_sig_rpc, build_submit_pqc_approval_rpc,
+        build_submit_signing_bundle_v2_rpc,
     };
 
     #[test]
@@ -327,5 +362,21 @@ mod tests {
         let submit_gamma = build_submit_gamma_point_rpc(62003, 1, &[0xee; 33]);
         assert_eq!(submit_gamma[0], 0x09);
         assert_eq!(submit_gamma[1], 0x46);
+    }
+
+    #[test]
+    fn builds_submit_signing_bundle_v2_rpc() {
+        let rpc = build_submit_signing_bundle_v2_rpc(
+            62003,
+            7,
+            &[1, 2],
+            &[vec![0xaa; 32], vec![0xbb; 32]],
+            &[vec![0xcc; 33], vec![0xdd; 33]],
+            &[vec![0xee; 32], vec![0xff; 32]],
+        );
+        assert_eq!(rpc[0], 0x09);
+        assert_eq!(rpc[1], 0x58);
+        assert_eq!(&rpc[2..6], &[0x00, 0x00, 0xf2, 0x33]);
+        assert_eq!(&rpc[6..10], &[0x00, 0x00, 0x00, 0x07]);
     }
 }
