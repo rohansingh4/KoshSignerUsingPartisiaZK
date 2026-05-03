@@ -1,5 +1,5 @@
 use crate::{
-    chain_relay::RelayHealth,
+    chain_relay::{RelayHealth, RelayPreflight},
     evm_broadcaster::{BroadcastSignedTxRequest, BroadcastSignedTxResult, UnsignedEthTransfer},
     jobs::{Job, JobKind},
     keystore::{KeyMaterialMetadata, PersistedPartyRuntime},
@@ -126,6 +126,18 @@ pub struct RelayHealthResponse {
 pub struct RelayContractStateResponse {
     pub contract_address: String,
     pub state: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RuntimePreflightQuery {
+    pub contract_address: String,
+    pub key_id: u32,
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimePreflightResponse {
+    pub preflight: RelayPreflight,
 }
 
 #[derive(Debug, Deserialize)]

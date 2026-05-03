@@ -2205,6 +2205,447 @@ pub fn submit_signing_bundle_v2(
     (state, vec![], vec![])
 }
 
+/// Low-latency v4 session open.
+///
+/// Preserves the same semantics as `sign_message` followed by
+/// `start_pqc_approval_session`, but compresses them into a single owner action.
+#[action(shortname = 0x59, zk = true)]
+pub fn open_signing_session_v4(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    message: Vec<u8>,
+    tx_tag: Vec<u8>,
+    signing_parties: Vec<u8>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    state.assert_owner(&ctx.sender);
+
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(
+        key_state.is_key_generated(),
+        "Key generation not yet complete for key {}",
+        key_id
+    );
+    key_state.assert_all_parties_ready_for_signing();
+    assert!(
+        !key_state.pqc_approval_active,
+        "Previous PQC approval session still active"
+    );
+    assert!(
+        !key_state.gg20_active,
+        "Cannot start PQC approval while GG20 session is active"
+    );
+
+    let num_parties = signing_parties.len() as u8;
+    assert!(num_parties >= 2, "Need at least 2 approval parties");
+    for &party_index in &signing_parties {
+        assert!(
+            party_index >= 1 && party_index <= key_state.num_shares,
+            "Invalid signing party"
+        );
+        assert!(
+            signing_parties
+                .iter()
+                .filter(|&&p| p == party_index)
+                .count()
+                == 1,
+            "Signing party set contains duplicate party index {}",
+            party_index
+        );
+        assert!(
+            key_state.is_party_ready_for_signing(party_index),
+            "Signing party {} is missing required address or PQC registration",
+            party_index
+        );
+    }
+
+    let policy_id = key_state.resolve_policy_id_for_tag(&tx_tag);
+    let min_signers = if policy_id != 0 {
+        let idx = key_state
+            .policy_ids
+            .iter()
+            .position(|&id| id == policy_id)
+            .expect("Resolved policy missing from state");
+        let policy_min = key_state.policy_min_thresholds[idx];
+        if policy_min == 0 {
+            key_state.threshold as u8
+        } else {
+            policy_min.max(key_state.threshold as u8)
+        }
+    } else {
+        key_state.threshold as u8
+    };
+    let task_id = key_state.queue_signing(message, tx_tag.clone(), policy_id, min_signers);
+
+    let request = key_state
+        .pending_sign_requests
+        .iter()
+        .find(|r| r.task_id == task_id)
+        .cloned()
+        .expect("Unknown signing task");
+
+    let mut required_parties: Vec<u8> = Vec::new();
+    if request.policy_id != 0 {
+        let idx = key_state
+            .policy_ids
+            .iter()
+            .position(|&id| id == request.policy_id)
+            .expect("Resolved policy missing from state");
+        required_parties = key_state.policy_mandatory_parties[idx].clone();
+        for &party_index in &required_parties {
+            assert!(
+                signing_parties.contains(&party_index),
+                "POLICY VIOLATION: Party {} is mandatory for this transaction (policy_id={}) but is not in the signing set",
+                party_index,
+                request.policy_id
+            );
+        }
+    }
+
+    assert!(
+        num_parties >= request.min_signers,
+        "Approval party set ({}) is below effective threshold ({})",
+        num_parties,
+        request.min_signers
+    );
+
+    let message_hash = key_state
+        .signing_information
+        .get(&task_id)
+        .expect("Signing task not found")
+        .message_hash
+        .clone();
+    let challenge = compute_pqc_session_challenge(
+        key_id,
+        task_id,
+        &message_hash,
+        &request.tx_tag,
+        &signing_parties,
+    );
+
+    key_state.pqc_approval_active = true;
+    key_state.pqc_approval_approved = false;
+    key_state.pqc_approval_task_id = task_id;
+    key_state.pqc_approval_message_hash = message_hash;
+    key_state.pqc_approval_tx_tag = request.tx_tag;
+    key_state.pqc_approval_signing_parties = signing_parties;
+    key_state.pqc_approval_required_parties = required_parties;
+    key_state.pqc_approval_min_signers = request.min_signers;
+    key_state.pqc_approval_challenge = challenge;
+    key_state.pqc_approval_deadline_block =
+        ctx.block_production_time + key_state.signing_timeout_blocks;
+    key_state.pqc_approval_received_parties.clear();
+    key_state.pqc_approval_received_hashes.clear();
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
+/// Low-latency v4 bundled signing finalization.
+///
+/// Preserves the same semantics as:
+/// - finalize_pqc_approval
+/// - gg20_start_signing
+/// - submit_signing_bundle_v2
+///
+/// while keeping per-party PQC approvals anchored by the existing submit action.
+#[action(shortname = 0x5A, zk = true)]
+pub fn submit_signing_bundle_v4(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    task_id: u32,
+    bundles: Vec<SigningPartyBundleV2>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    state.assert_owner(&ctx.sender);
+
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(key_state.is_key_generated(), "Key not yet generated");
+    key_state.assert_all_parties_ready_for_signing();
+    assert!(
+        key_state.pqc_approval_active,
+        "No active PQC approval session"
+    );
+    assert_eq!(
+        key_state.pqc_approval_task_id, task_id,
+        "PQC approval session is not bound to this signing task"
+    );
+    assert!(
+        !key_state.gg20_active,
+        "Previous GG20 signing session still active — abort it first (0x48) or wait for completion"
+    );
+
+    for &party_index in &key_state.pqc_approval_required_parties {
+        assert!(
+            key_state
+                .pqc_approval_received_parties
+                .contains(&party_index),
+            "Required party {} has not submitted a PQC approval",
+            party_index
+        );
+    }
+    assert!(
+        key_state.pqc_approval_received_parties.len() as u8 >= key_state.pqc_approval_min_signers,
+        "PQC approval session has only {}/{} approvals",
+        key_state.pqc_approval_received_parties.len(),
+        key_state.pqc_approval_min_signers
+    );
+
+    let signing_parties = key_state.pqc_approval_signing_parties.clone();
+    let num_parties = signing_parties.len() as u8;
+    assert!(num_parties >= 2, "Need at least 2 signing parties");
+
+    let _info = key_state
+        .signing_information
+        .get(&task_id)
+        .expect("Unknown signing task");
+
+    let task_policy_id = key_state
+        .pending_sign_requests
+        .iter()
+        .find(|r| r.task_id == task_id)
+        .map(|r| r.policy_id)
+        .unwrap_or(0);
+
+    let mut required_parties: Vec<u8> = Vec::new();
+    let mut effective_min_signers = key_state.threshold as u8;
+    if task_policy_id != 0 {
+        if let Some(idx) = key_state
+            .policy_ids
+            .iter()
+            .position(|&id| id == task_policy_id)
+        {
+            required_parties = key_state.policy_mandatory_parties[idx].clone();
+            let policy_min = key_state.policy_min_thresholds[idx];
+            if policy_min != 0 {
+                effective_min_signers = policy_min.max(effective_min_signers);
+            }
+            for &m in &required_parties {
+                assert!(
+                    signing_parties.contains(&m),
+                    "POLICY VIOLATION: Party {} is mandatory for this transaction (policy_id={}) but is not in the signing set",
+                    m,
+                    task_policy_id
+                );
+            }
+        }
+    }
+    assert!(
+        num_parties >= effective_min_signers,
+        "Signing parties ({}) is below effective threshold ({})",
+        num_parties,
+        effective_min_signers
+    );
+    assert_eq!(
+        key_state.pqc_approval_min_signers, effective_min_signers,
+        "PQC approval session minimum signer requirement does not match current policy state"
+    );
+    assert!(
+        same_party_set(&key_state.pqc_approval_required_parties, &required_parties),
+        "PQC approval session required-party set does not match current policy state"
+    );
+    for &party_index in &signing_parties {
+        assert!(
+            party_index <= key_state.num_shares,
+            "Signing party {} is outside configured share range",
+            party_index
+        );
+        assert!(
+            key_state.is_party_ready_for_signing(party_index),
+            "Signing party {} is missing required address or PQC registration",
+            party_index
+        );
+    }
+
+    key_state.pqc_approval_approved = true;
+    key_state.signing_session_id += 1;
+    key_state.gg20_active = true;
+    key_state.gg20_num_parties = num_parties;
+    key_state.gg20_signing_parties = signing_parties.clone();
+    key_state.gg20_task_id = task_id;
+    key_state.gg20_policy_id = task_policy_id;
+    key_state.gg20_required_parties = required_parties;
+    key_state.gg20_min_signers = effective_min_signers;
+    key_state.gg20_delta_indices.clear();
+    key_state.gg20_delta_values.clear();
+    key_state.gg20_delta_commit_indices.clear();
+    key_state.gg20_delta_commit_hashes.clear();
+    key_state.gg20_delta_zk_vars.clear();
+    key_state.gg20_delta_zk_count = 0;
+    key_state.gg20_delta_zk_expected = 0;
+    key_state.gg20_gamma_indices.clear();
+    key_state.gg20_gamma_points.clear();
+    key_state.gg20_r_bytes.clear();
+    key_state.ts_task_id = task_id;
+    key_state.ps_commit_indices.clear();
+    key_state.ps_commit_hashes.clear();
+    key_state.ts_partial_indices.clear();
+    key_state.ts_partial_values.clear();
+    key_state.signing_deadline_block = ctx.block_production_time + key_state.signing_timeout_blocks;
+
+    assert!(
+        bundles.len() as u8 == key_state.gg20_num_parties,
+        "Expected {} signing bundles, got {}",
+        key_state.gg20_num_parties,
+        bundles.len()
+    );
+
+    let bundle_indices: Vec<u8> = bundles.iter().map(|bundle| bundle.party_index).collect();
+    assert!(
+        same_party_set(&bundle_indices, &key_state.gg20_signing_parties),
+        "Bundled party set does not match the active signing subset"
+    );
+
+    for bundle in &bundles {
+        assert!(
+            key_state.is_active_signing_party(bundle.party_index),
+            "Party {} is not part of the active signing subset",
+            bundle.party_index
+        );
+        assert_eq!(bundle.delta_bytes.len(), 32, "Delta must be 32 bytes");
+        assert_eq!(bundle.gamma_point.len(), 33, "Gamma point must be 33 bytes");
+        assert_eq!(
+            bundle.partial_s.len(),
+            32,
+            "Partial signature must be 32 bytes"
+        );
+        assert!(
+            bundle_indices
+                .iter()
+                .filter(|&&idx| idx == bundle.party_index)
+                .count()
+                == 1,
+            "Bundled party set contains duplicate party index {}",
+            bundle.party_index
+        );
+        VerifyingKey::from_sec1_bytes(&bundle.gamma_point).expect("Invalid gamma point");
+    }
+
+    for bundle in &bundles {
+        key_state.gg20_delta_commit_indices.push(bundle.party_index);
+        key_state
+            .gg20_delta_commit_hashes
+            .push(dkg::sha256(&bundle.delta_bytes).to_vec());
+        key_state.ps_commit_indices.push(bundle.party_index);
+        key_state
+            .ps_commit_hashes
+            .push(dkg::sha256(&bundle.partial_s).to_vec());
+    }
+
+    for bundle in &bundles {
+        key_state.gg20_delta_indices.push(bundle.party_index);
+        key_state.gg20_delta_values.push(bundle.delta_bytes.clone());
+        key_state.gg20_gamma_indices.push(bundle.party_index);
+        key_state.gg20_gamma_points.push(bundle.gamma_point.clone());
+    }
+
+    use k256::elliptic_curve::ff::PrimeField;
+    use k256::elliptic_curve::sec1::FromEncodedPoint;
+    use k256::EncodedPoint;
+    use k256::{AffinePoint as K256Affine, FieldBytes, ProjectivePoint as K256Proj, Scalar};
+
+    let mut delta = Scalar::ZERO;
+    for dv in &key_state.gg20_delta_values {
+        let mut fb = FieldBytes::default();
+        fb.copy_from_slice(dv);
+        let s = Option::<Scalar>::from(Scalar::from_repr(fb)).expect("Invalid delta scalar");
+        delta = delta + s;
+    }
+
+    let mut gamma_combined = K256Proj::IDENTITY;
+    for gp in &key_state.gg20_gamma_points {
+        let encoded = EncodedPoint::from_bytes(gp).expect("Invalid gamma point encoding");
+        let affine = Option::<K256Affine>::from(K256Affine::from_encoded_point(&encoded))
+            .expect("Invalid gamma affine point");
+        gamma_combined = gamma_combined + K256Proj::from(affine);
+    }
+
+    let delta_inv = delta.invert();
+    assert!(bool::from(delta_inv.is_some()), "Delta has no inverse");
+    let delta_inv = delta_inv.unwrap();
+    let r_point = gamma_combined * delta_inv;
+    let r_affine = r_point.to_affine();
+    let r_encoded = EncodedPoint::from(r_affine);
+    let r_compressed = r_encoded.compress();
+    let r_bytes_full = r_compressed.as_bytes();
+    let r_bytes = r_bytes_full[1..33].to_vec();
+    let recovery_id = if r_bytes_full[0] == 0x02 { 0u8 } else { 1u8 };
+
+    key_state.gg20_r_bytes = r_bytes.clone();
+    key_state.ts_task_id = task_id;
+    key_state.ts_active = true;
+    key_state.ts_r_bytes = r_bytes;
+    key_state.ts_recovery_id = recovery_id;
+    key_state.ts_num_parties = key_state.gg20_num_parties;
+    key_state.signing_phase = ZkSigningPhase::ThresholdSigning { task_id };
+    key_state.signing_round += 1;
+
+    for bundle in &bundles {
+        key_state.ts_partial_indices.push(bundle.party_index);
+        key_state.ts_partial_values.push(bundle.partial_s.clone());
+    }
+
+    let (combined_s, was_negated) =
+        combine_partial_signatures_with_flag(&key_state.ts_partial_values);
+    let recovery_id = if was_negated {
+        key_state.ts_recovery_id ^ 1
+    } else {
+        key_state.ts_recovery_id
+    };
+
+    let mut signature = Vec::with_capacity(65);
+    signature.extend_from_slice(&key_state.ts_r_bytes);
+    signature.extend_from_slice(&combined_s);
+    signature.push(recovery_id);
+
+    let public_key = key_state.public_key.clone().expect("Public key missing");
+    let verifying_key =
+        VerifyingKey::from_sec1_bytes(&public_key).expect("Stored public key is not valid");
+    let sig64 = &signature[0..64];
+    let parsed_sig = Signature::try_from(sig64).expect("Failed to parse combined signature");
+
+    let mut info = key_state
+        .signing_information
+        .get(&task_id)
+        .expect("Signing task not found");
+
+    verifying_key
+        .verify_prehash(&info.message_hash, &parsed_sig)
+        .expect("Combined threshold signature verification failed");
+
+    info.recovery_id = recovery_id;
+    info.signature = Some(signature);
+    info.verified = true;
+    key_state.signing_information.insert(task_id, info);
+
+    key_state.ts_active = false;
+    key_state.gg20_active = false;
+    key_state.gg20_task_id = 0;
+    key_state.gg20_policy_id = 0;
+    key_state.gg20_required_parties.clear();
+    key_state.gg20_min_signers = 0;
+    key_state.gg20_signing_parties.clear();
+    key_state.gg20_num_parties = 0;
+    key_state.reset_pqc_approval_session();
+    key_state.ts_partial_indices.clear();
+    key_state.ts_partial_values.clear();
+    key_state.signing_phase = ZkSigningPhase::Complete { task_id };
+    key_state
+        .pending_sign_requests
+        .retain(|r| r.task_id != task_id);
+
+    if !key_state.pending_sign_requests.is_empty() {
+        key_state.start_next_signing();
+    } else {
+        key_state.signing_phase = ZkSigningPhase::Idle {};
+    }
+
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
 // ---------------------------------------------------------------------------
 // Timeout / Abort — prevents locked keys when a party goes offline
 // ---------------------------------------------------------------------------

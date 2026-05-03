@@ -1,14 +1,8 @@
-   0.504443542s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint: stale: changed "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer/src/lib.rs"
-   0.504666667s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint:           (vs) "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-zk-signer-dc0b1748cb530857/dep-lib-kosh_zk_signer"
-   0.504669833s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1777708131, nanos: 691151368 } < FileTime { seconds: 1777754326, nanos: 938805045 }
-   0.598135875s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint: fingerprint dirty for kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend)/Check { test: false }/TargetInner { name: "kosh-backend", doc: true, ..: with_path("/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend/src/main.rs", Edition2021) }
-   0.598926875s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { name: "kosh_zk_signer" })
-   0.645994792s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint: fingerprint dirty for kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("kosh_zk_signer", ["rlib", "cdylib"], "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer/src/lib.rs", Edition2021) }
-   0.646024208s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-zk-signer-dc0b1748cb530857/dep-lib-kosh_zk_signer", reference_mtime: FileTime { seconds: 1777708131, nanos: 691151368 }, stale: "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer/src/lib.rs", stale_mtime: FileTime { seconds: 1777754326, nanos: 938805045 } }))
-   0.699405500s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint: fingerprint dirty for kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend)/Check { test: true }/TargetInner { name: "kosh-backend", doc: true, ..: with_path("/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend/src/main.rs", Edition2021) }
-   0.699420333s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { name: "kosh_zk_signer" })
-   0.712701417s  INFO prepare_target{force=false package_id=kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc) target="kosh-pqc"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc)/Check { test: false }/TargetInner { name: "kosh-pqc", doc: true, ..: with_path("/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc/src/main.rs", Edition2021) }
-   0.712718708s  INFO prepare_target{force=false package_id=kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc) target="kosh-pqc"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-pqc-115d3aebf45c7f27/bin-kosh-pqc`
+   0.348210959s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint: stale: changed "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer/src/lib.rs"
+   0.348360500s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint:           (vs) "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-zk-signer-dc0b1748cb530857/dep-lib-kosh_zk_signer"
+   0.348363459s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1777786732, nanos: 822936174 } < FileTime { seconds: 1777790365, nanos: 123037543 }
+   0.376792750s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend)/Check { test: false }/TargetInner { name: "kosh-backend", doc: true, ..: with_path("/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend/src/main.rs", Edition2021) }
+   0.376956625s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-backend-2dd4d90a408db53d/bin-kosh-backend`
 
 Caused by:
     No such file or directory (os error 2)
@@ -31,8 +25,109 @@ Stack backtrace:
   14: std::rt::lang_start::<()>::{closure#0}
   15: std::rt::lang_start_internal
   16: _main
-   0.731418500s  INFO prepare_target{force=false package_id=kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc) target="build-script-build"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc)/RunCustomBuild/TargetInner { ..: custom_build_target("build-script-build", "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc/build.rs", Edition2021) }
-   0.731438083s  INFO prepare_target{force=false package_id=kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc) target="build-script-build"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-pqc-104260bb8f2b8cdc/run-build-script-build-script-build`
+   0.419570792s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint: fingerprint dirty for kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("kosh_zk_signer", ["rlib", "cdylib"], "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer/src/lib.rs", Edition2021) }
+   0.420217209s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-zk-signer-dc0b1748cb530857/dep-lib-kosh_zk_signer", reference_mtime: FileTime { seconds: 1777786732, nanos: 822936174 }, stale: "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer/src/lib.rs", stale_mtime: FileTime { seconds: 1777790365, nanos: 123037543 } }))
+   0.434498875s  INFO prepare_target{force=false package_id=reqwest v0.12.28 target="reqwest"}: cargo::core::compiler::fingerprint: fingerprint error for reqwest v0.12.28/Check { test: false }/TargetInner { ..: lib_target("reqwest", ["lib"], "/Users/rachitsharma/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/reqwest-0.12.28/src/lib.rs", Edition2021) }
+   0.434508917s  INFO prepare_target{force=false package_id=reqwest v0.12.28 target="reqwest"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/reqwest-3d6a4b19fd0705dc/lib-reqwest`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   8: cargo::ops::cargo_compile::compile_ws
+   9: cargo::ops::cargo_compile::compile_with_exec
+  10: cargo::ops::cargo_compile::compile
+  11: cargo::commands::check::exec
+  12: <cargo::cli::Exec>::exec
+  13: cargo::main
+  14: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  15: std::rt::lang_start::<()>::{closure#0}
+  16: std::rt::lang_start_internal
+  17: _main
+   0.438751917s  INFO prepare_target{force=false package_id=tower-http v0.6.8 target="tower_http"}: cargo::core::compiler::fingerprint: fingerprint error for tower-http v0.6.8/Check { test: false }/TargetInner { ..: lib_target("tower_http", ["lib"], "/Users/rachitsharma/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tower-http-0.6.8/src/lib.rs", Edition2018) }
+   0.438758917s  INFO prepare_target{force=false package_id=tower-http v0.6.8 target="tower_http"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/tower-http-5ede7bc1006fe265/lib-tower_http`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+   0.455343959s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend)/Check { test: true }/TargetInner { name: "kosh-backend", doc: true, ..: with_path("/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend/src/main.rs", Edition2021) }
+   0.455354125s  INFO prepare_target{force=false package_id=kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend) target="kosh-backend"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-backend-db1e1beb0ca109ee/test-bin-kosh-backend`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.468924667s  INFO prepare_target{force=false package_id=kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc) target="kosh-pqc"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc)/Check { test: false }/TargetInner { name: "kosh-pqc", doc: true, ..: with_path("/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc/src/main.rs", Edition2021) }
+   0.468934709s  INFO prepare_target{force=false package_id=kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc) target="kosh-pqc"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-pqc-115d3aebf45c7f27/bin-kosh-pqc`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.469652250s  INFO prepare_target{force=false package_id=kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc) target="build-script-build"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc)/RunCustomBuild/TargetInner { ..: custom_build_target("build-script-build", "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc/build.rs", Edition2021) }
+   0.469658750s  INFO prepare_target{force=false package_id=kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc) target="build-script-build"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-pqc-104260bb8f2b8cdc/run-build-script-build-script-build`
 
 Caused by:
     No such file or directory (os error 2)
@@ -57,8 +152,8 @@ Stack backtrace:
   16: std::rt::lang_start::<()>::{closure#0}
   17: std::rt::lang_start_internal
   18: _main
-   0.788978708s  INFO prepare_target{force=false package_id=kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc) target="kosh-pqc"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc)/Check { test: true }/TargetInner { name: "kosh-pqc", doc: true, ..: with_path("/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc/src/main.rs", Edition2021) }
-   0.789056375s  INFO prepare_target{force=false package_id=kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc) target="kosh-pqc"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-pqc-f261ca67eeaf1e70/test-bin-kosh-pqc`
+   0.478460167s  INFO prepare_target{force=false package_id=kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc) target="kosh-pqc"}: cargo::core::compiler::fingerprint: fingerprint error for kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc)/Check { test: true }/TargetInner { name: "kosh-pqc", doc: true, ..: with_path("/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc/src/main.rs", Edition2021) }
+   0.478466042s  INFO prepare_target{force=false package_id=kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc) target="kosh-pqc"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-pqc-f261ca67eeaf1e70/test-bin-kosh-pqc`
 
 Caused by:
     No such file or directory (os error 2)
@@ -81,11 +176,12 @@ Stack backtrace:
   14: std::rt::lang_start::<()>::{closure#0}
   15: std::rt::lang_start_internal
   16: _main
-   0.806577250s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint: stale: changed "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer/src/lib.rs"
-   0.806588125s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint:           (vs) "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-zk-signer-f0a709de21d05eee/dep-test-lib-kosh_zk_signer"
-   0.806590417s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1777708131, nanos: 691161034 } < FileTime { seconds: 1777754326, nanos: 938805045 }
-   0.813648250s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint: fingerprint dirty for kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("kosh_zk_signer", ["rlib", "cdylib"], "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer/src/lib.rs", Edition2021) }
-   0.813714083s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-zk-signer-f0a709de21d05eee/dep-test-lib-kosh_zk_signer", reference_mtime: FileTime { seconds: 1777708131, nanos: 691161034 }, stale: "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer/src/lib.rs", stale_mtime: FileTime { seconds: 1777754326, nanos: 938805045 } }))
+   0.480194834s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint: stale: changed "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer/src/lib.rs"
+   0.480197834s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint:           (vs) "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-zk-signer-f0a709de21d05eee/dep-test-lib-kosh_zk_signer"
+   0.480199792s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1777786732, nanos: 827831046 } < FileTime { seconds: 1777790365, nanos: 123037543 }
+   0.481259084s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint: fingerprint dirty for kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("kosh_zk_signer", ["rlib", "cdylib"], "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer/src/lib.rs", Edition2021) }
+   0.481270125s  INFO prepare_target{force=false package_id=kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer) target="kosh_zk_signer"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/target/debug/.fingerprint/kosh-zk-signer-f0a709de21d05eee/dep-test-lib-kosh_zk_signer", reference_mtime: FileTime { seconds: 1777786732, nanos: 827831046 }, stale: "/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer/src/lib.rs", stale_mtime: FileTime { seconds: 1777790365, nanos: 123037543 } }))
+    Checking tower-http v0.6.8
    Compiling kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc)
     Checking kosh-zk-signer v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/contracts/kosh-zk-signer)
 error: failed to run custom build command for `kosh-pqc v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/services/kosh-pqc)`
@@ -99,7 +195,7 @@ Caused by:
 
   --- stderr
 
-  thread 'main' (37473) panicked at services/kosh-pqc/build.rs:5:10:
+  thread 'main' (422458) panicked at services/kosh-pqc/build.rs:5:10:
   called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: "protoc failed: Could not make proto path relative: ../proto/pqc.proto: No such file or directory\n" }
   stack backtrace:
      0: __rustc::rust_begin_unwind
@@ -112,4 +208,5 @@ Caused by:
      4: <fn() as core::ops::function::FnOnce<()>>::call_once
   note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
 warning: build failed, waiting for other jobs to finish...
+    Checking reqwest v0.12.28
     Checking kosh-backend v0.1.0 (/Users/rachitsharma/Desktop/wasserstoff/KoshSignerUsingPartisiaZK/backend)

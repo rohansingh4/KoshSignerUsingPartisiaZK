@@ -194,9 +194,21 @@ pub fn build_submit_signing_bundle_v2_rpc(
     gamma_points: &[Vec<u8>],
     partial_sigs: &[Vec<u8>],
 ) -> Vec<u8> {
-    assert_eq!(party_indices.len(), delta_values.len(), "party_indices/delta_values length mismatch");
-    assert_eq!(party_indices.len(), gamma_points.len(), "party_indices/gamma_points length mismatch");
-    assert_eq!(party_indices.len(), partial_sigs.len(), "party_indices/partial_sigs length mismatch");
+    assert_eq!(
+        party_indices.len(),
+        delta_values.len(),
+        "party_indices/delta_values length mismatch"
+    );
+    assert_eq!(
+        party_indices.len(),
+        gamma_points.len(),
+        "party_indices/gamma_points length mismatch"
+    );
+    assert_eq!(
+        party_indices.len(),
+        partial_sigs.len(),
+        "party_indices/partial_sigs length mismatch"
+    );
 
     let bundles: Vec<SigningPartyBundleV2> = party_indices
         .iter()

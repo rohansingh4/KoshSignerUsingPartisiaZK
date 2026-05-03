@@ -14,6 +14,7 @@ use serde::Serialize;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::{path::PathBuf, sync::Arc};
 use tokio::{net::TcpListener, sync::RwLock};
+use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
 #[derive(Clone, Debug, Serialize)]
@@ -63,7 +64,7 @@ impl Application {
             database,
             active_runtime: Arc::new(RwLock::new(None)),
         };
-        let router = api::routes::router(state.clone());
+        let router = api::routes::router(state.clone()).layer(build_cors_layer(&config)?);
 
         Ok(Self {
             config,
@@ -124,4 +125,20 @@ fn build_evm_broadcaster(config: &Config) -> EvmBroadcaster {
         rpc_url: config.sepolia_rpc_url.clone(),
         chain_id: config.sepolia_chain_id,
     })
+}
+
+fn build_cors_layer(config: &Config) -> Result<CorsLayer> {
+    let mut origins = Vec::with_capacity(config.cors_allowed_origins.len());
+    for origin in &config.cors_allowed_origins {
+        origins.push(
+            origin
+                .parse()
+                .with_context(|| format!("invalid CORS origin `{origin}`"))?,
+        );
+    }
+
+    Ok(CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods(Any)
+        .allow_headers(Any))
 }

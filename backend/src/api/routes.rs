@@ -11,12 +11,12 @@ use crate::{
         MtAFinalizeRequest, MtAFinalizeResponse, MtARound1Request, MtARound1Response,
         MtARound2Request, MtARound2Response, PaillierKeygenRequest, PaillierKeygenResponse,
         PostTopicRequest, PostTopicResponse, ReadTopicQuery, ReadTopicResponse,
-        RelayContractStateResponse, RelayHealthResponse, StartCreateKeyWorkflowRequest,
-        StartReuseSignWorkflowRequest, StorePartyRuntimeRequest, StorePartyRuntimeResponse,
-        StoreSecretRequest, StoreSecretResponse, ThresholdKeyStatusQuery,
-        ThresholdKeyStatusResponse, ThresholdTaskSignatureQuery, ThresholdTaskSignatureResponse,
-        ValidatePolicyRequest, ValidatePolicyResponse, VerifySubshareRequest,
-        VerifySubshareResponse,
+        RelayContractStateResponse, RelayHealthResponse, RuntimePreflightQuery,
+        RuntimePreflightResponse, StartCreateKeyWorkflowRequest, StartReuseSignWorkflowRequest,
+        StorePartyRuntimeRequest, StorePartyRuntimeResponse, StoreSecretRequest,
+        StoreSecretResponse, ThresholdKeyStatusQuery, ThresholdKeyStatusResponse,
+        ThresholdTaskSignatureQuery, ThresholdTaskSignatureResponse, ValidatePolicyRequest,
+        ValidatePolicyResponse, VerifySubshareRequest, VerifySubshareResponse,
     },
     app::AppState,
     evm_broadcaster::UnsignedEthTransfer,
@@ -63,6 +63,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/policies/:policy_id", delete(remove_policy))
         .route("/api/v1/policies/validate", post(validate_policy))
         .route("/api/v1/relay/health", get(relay_health))
+        .route("/api/v1/runtime/preflight", get(runtime_preflight))
         .route(
             "/api/v1/relay/contracts/:contract_address",
             get(relay_contract_state),
@@ -288,6 +289,109 @@ async fn relay_health(State(state): State<AppState>) -> Json<RelayHealthResponse
     Json(RelayHealthResponse {
         relay: state.chain_relay.health().await,
     })
+}
+
+async fn runtime_preflight(
+    State(state): State<AppState>,
+    Query(query): Query<RuntimePreflightQuery>,
+) -> impl IntoResponse {
+    let relay = state.chain_relay.health().await;
+    let sender_gas_ok = relay.gas_ok.unwrap_or(false);
+    let key_status = match state
+        .chain_relay
+        .get_contract_data(&query.contract_address)
+        .await
+    {
+        Ok(contract_state) => threshold_read::threshold_key_status(&contract_state, query.key_id)
+            .await
+            .ok(),
+        Err(_) => None,
+    };
+    let key_exists_onchain = key_status
+        .as_ref()
+        .map(|status| status.exists)
+        .unwrap_or(false);
+    let local_runtime_present = if let Some(keystore) = &state.keystore {
+        keystore
+            .load_party_runtime(&query.contract_address, query.key_id, 1)
+            .await
+            .is_ok()
+            && keystore
+                .load_party_runtime(&query.contract_address, query.key_id, 2)
+                .await
+                .is_ok()
+    } else {
+        false
+    };
+    let mode = query.mode.unwrap_or_else(|| "sign".to_string());
+    let (ok, can_create, can_sign, message) = if !relay.configured {
+        (
+            false,
+            false,
+            false,
+            "Partisia relay is not configured on this backend.".to_string(),
+        )
+    } else if !sender_gas_ok {
+        (
+            false,
+            false,
+            false,
+            format!(
+                "Partisia sender {} has insufficient gas. Run: {}",
+                relay
+                    .sender_address
+                    .clone()
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+                relay.recommended_mint_command.clone().unwrap_or_else(|| {
+                    "cargo pbc account --net=testnet mintgas <sender>".to_string()
+                })
+            ),
+        )
+    } else if mode == "create" {
+        (
+            true,
+            true,
+            false,
+            "Backend is ready to create a new key.".to_string(),
+        )
+    } else if !key_exists_onchain {
+        (
+            false,
+            false,
+            false,
+            "Key does not exist on-chain. Create it first on this backend.".to_string(),
+        )
+    } else if !local_runtime_present {
+        (false, false, false, "Key exists on-chain, but local signing runtime is missing on this backend. Use Create New Key on this backend first.".to_string())
+    } else {
+        (
+            true,
+            false,
+            true,
+            "Backend is ready to sign with this key.".to_string(),
+        )
+    };
+
+    (
+        StatusCode::OK,
+        Json(RuntimePreflightResponse {
+            preflight: crate::chain_relay::RelayPreflight {
+                ok,
+                backend_reachable: true,
+                relay_configured: relay.configured,
+                sender_address: relay.sender_address.clone(),
+                sender_gas_balance: relay.sender_gas_balance,
+                sender_gas_ok,
+                local_runtime_present,
+                key_exists_onchain,
+                can_create,
+                can_sign,
+                recommended_mint_command: relay.recommended_mint_command.clone(),
+                message,
+            },
+        }),
+    )
+        .into_response()
 }
 
 async fn relay_contract_state(

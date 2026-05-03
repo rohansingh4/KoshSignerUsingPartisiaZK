@@ -4,6 +4,7 @@ use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 #[derive(Clone, Debug)]
 pub struct Config {
     pub bind_addr: SocketAddr,
+    pub cors_allowed_origins: Vec<String>,
     pub database_url: Option<String>,
     pub log_filter: String,
     pub service_name: String,
@@ -29,6 +30,13 @@ impl Config {
         let database_url = env::var("KOSH_BACKEND_DATABASE_URL")
             .ok()
             .filter(|v| !v.trim().is_empty());
+        let cors_allowed_origins = env::var("KOSH_CORS_ALLOWED_ORIGINS")
+            .unwrap_or_else(|_| "http://localhost:5173,http://127.0.0.1:5173".to_string())
+            .split(',')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
         let log_filter =
             env::var("KOSH_BACKEND_LOG").unwrap_or_else(|_| "info,kosh_backend=debug".to_string());
         let service_name =
@@ -80,6 +88,7 @@ impl Config {
 
         Ok(Self {
             bind_addr,
+            cors_allowed_origins,
             database_url,
             log_filter,
             service_name,

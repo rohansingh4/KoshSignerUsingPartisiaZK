@@ -42,6 +42,25 @@ pub struct RelayHealth {
     pub node_count: usize,
     pub max_retries: u32,
     pub last_error: Option<String>,
+    pub sender_gas_balance: Option<u64>,
+    pub gas_ok: Option<bool>,
+    pub recommended_mint_command: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RelayPreflight {
+    pub ok: bool,
+    pub backend_reachable: bool,
+    pub relay_configured: bool,
+    pub sender_address: Option<String>,
+    pub sender_gas_balance: Option<u64>,
+    pub sender_gas_ok: bool,
+    pub local_runtime_present: bool,
+    pub key_exists_onchain: bool,
+    pub can_create: bool,
+    pub can_sign: bool,
+    pub recommended_mint_command: Option<String>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +96,8 @@ impl ChainRelay {
     }
 
     pub async fn health(&self) -> RelayHealth {
+        let sender_gas_balance = self.sender_gas_balance().await.ok().flatten();
+        let gas_ok = sender_gas_balance.map(|balance| balance > 0);
         RelayHealth {
             configured: !self.config.node_urls.is_empty(),
             sender_address: self.config.sender_address.clone(),
@@ -84,7 +105,28 @@ impl ChainRelay {
             node_count: self.config.node_urls.len(),
             max_retries: self.config.max_retries,
             last_error: self.last_error.read().await.clone(),
+            sender_gas_balance,
+            gas_ok,
+            recommended_mint_command: self
+                .config
+                .sender_address
+                .as_ref()
+                .map(|sender| format!("cargo pbc account --net=testnet mintgas {sender}")),
         }
+    }
+
+    pub async fn sender_gas_balance(&self) -> Result<Option<u64>> {
+        let Some(sender_address) = self.config.sender_address.as_deref() else {
+            return Ok(None);
+        };
+        let account = self
+            .try_across_nodes("sender_gas_balance", |node| {
+                let node = node.to_string();
+                let sender_address = sender_address.to_string();
+                async move { fetch_account(&self.client, &node, &sender_address).await }
+            })
+            .await?;
+        Ok(max_gas_balance(&account))
     }
 
     pub async fn active_node(&self) -> Option<String> {
@@ -276,8 +318,7 @@ impl ChainRelay {
                     Err(err) if !attempted_nonce_retry && is_unexpected_nonce_error(&err) => {
                         attempted_nonce_retry = true;
                         self.invalidate_sender_state().await;
-                        let refreshed =
-                            self.reserve_sender_state(&node, &sender_address).await?;
+                        let refreshed = self.reserve_sender_state(&node, &sender_address).await?;
                         nonce = refreshed.next_nonce;
                         continue;
                     }
@@ -435,6 +476,35 @@ async fn fetch_chain_id(client: &Client, node: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("chainId missing from chain response"))
 }
 
+async fn fetch_account(client: &Client, node: &str, sender_address: &str) -> Result<Value> {
+    let url = format!("{node}/chain/accounts/{sender_address}");
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow!("get account failed with HTTP {status}: {body}"));
+    }
+    response.json().await.context("decode account json")
+}
+
+fn max_gas_balance(account: &Value) -> Option<u64> {
+    account
+        .get("account")
+        .and_then(|v| v.get("accountCoins"))
+        .and_then(Value::as_array)
+        .and_then(|coins| {
+            coins
+                .iter()
+                .filter_map(|coin| coin.get("balance").and_then(Value::as_str))
+                .filter_map(|balance| balance.parse::<u64>().ok())
+                .max()
+        })
+}
+
 async fn fetch_nonce(client: &Client, node: &str, sender_address: &str) -> Result<i64> {
     let url = format!("{node}/chain/accounts/{sender_address}");
     let response = client
@@ -447,7 +517,7 @@ async fn fetch_nonce(client: &Client, node: &str, sender_address: &str) -> Resul
         let body = response.text().await.unwrap_or_default();
         return Err(anyhow!("get nonce failed with HTTP {status}: {body}"));
     }
-    let body: Value = response.json().await.context("decode account json")?;
+    let body = fetch_account(client, node, sender_address).await?;
     body.get("nonce")
         .and_then(Value::as_i64)
         .ok_or_else(|| anyhow!("nonce missing from account response"))

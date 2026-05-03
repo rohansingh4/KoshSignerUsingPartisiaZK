@@ -12,7 +12,6 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::Digest;
 
 const DEFAULT_ACTION_GAS: u64 = 10_000_000;
 
@@ -73,17 +72,7 @@ pub async fn start_create_key_workflow(state: AppState, request: CreateKeyWorkfl
 }
 
 pub async fn start_reuse_sign_workflow(state: AppState, request: ReuseSignWorkflowRequest) -> Job {
-    let job = state.jobs.create_job(JobKind::ReuseSign).await;
-    let job_id = job.id;
-    let jobs = state.jobs.clone();
-    tokio::spawn(async move {
-        if let Err(err) = run_reuse_sign_workflow(state, job_id, request, false).await {
-            let _ = jobs
-                .set_failed(job_id, JobPhase::Failed, err.to_string())
-                .await;
-        }
-    });
-    job
+    start_reuse_sign_v2_workflow(state, request).await
 }
 
 pub async fn start_reuse_sign_v2_workflow(
@@ -94,7 +83,7 @@ pub async fn start_reuse_sign_v2_workflow(
     let job_id = job.id;
     let jobs = state.jobs.clone();
     tokio::spawn(async move {
-        if let Err(err) = run_reuse_sign_workflow(state, job_id, request, true).await {
+        if let Err(err) = run_reuse_sign_workflow(state, job_id, request).await {
             let _ = jobs
                 .set_failed(job_id, JobPhase::Failed, err.to_string())
                 .await;
@@ -406,7 +395,6 @@ async fn run_reuse_sign_workflow(
     state: AppState,
     job_id: uuid::Uuid,
     request: ReuseSignWorkflowRequest,
-    use_signing_bundle_v2: bool,
 ) -> Result<()> {
     recover_signing_session_if_needed(&state, job_id, &request.contract_address, request.key_id)
         .await?;
@@ -533,12 +521,19 @@ async fn run_reuse_sign_workflow(
             .log(
                 job_id,
                 format!(
-                    "submitted sign_message on {} tx {}",
-                    submitted.node_url, submitted.tx_hash
+                    "submitted {} on {} tx {}",
+                    "sign_message", submitted.node_url, submitted.tx_hash
                 ),
             )
             .await;
 
+        let challenge = pqc::compute_pqc_session_challenge(
+            request.key_id,
+            task_id_used,
+            &msg_hash_bytes,
+            &request.tx_tag,
+            &request.signing_parties,
+        );
         state
             .jobs
             .set_running(
@@ -547,13 +542,6 @@ async fn run_reuse_sign_workflow(
                 "starting and finalizing PQC approval session on Partisia",
             )
             .await;
-        let challenge = pqc::compute_pqc_session_challenge(
-            request.key_id,
-            task_id_used,
-            &msg_hash_bytes,
-            &request.tx_tag,
-            &request.signing_parties,
-        );
         let start_pqc_rpc = action_builders::build_start_pqc_approval_session_rpc(
             request.key_id,
             task_id_used,
@@ -742,7 +730,7 @@ async fn run_reuse_sign_workflow(
     }
 
     if state.chain_relay.is_action_submission_configured().await {
-        if use_signing_bundle_v2 {
+        {
             let mut delta_values = Vec::with_capacity(request.signing_parties.len());
             let mut gamma_points = Vec::with_capacity(request.signing_parties.len());
             let mut partial_sigs = Vec::with_capacity(request.signing_parties.len());
@@ -770,19 +758,22 @@ async fn run_reuse_sign_workflow(
                 partial_sigs.push(hex::decode(&partial.s_i_hex)?);
             }
 
-            let rpc = action_builders::build_submit_signing_bundle_v2_rpc(
-                request.key_id,
-                task_id_used,
-                &request.signing_parties,
-                &delta_values,
-                &gamma_points,
-                &partial_sigs,
+            let (rpc, action_name) = (
+                action_builders::build_submit_signing_bundle_v2_rpc(
+                    request.key_id,
+                    task_id_used,
+                    &request.signing_parties,
+                    &delta_values,
+                    &gamma_points,
+                    &partial_sigs,
+                ),
+                "submit_signing_bundle_v2",
             );
             let submitted = state
                 .chain_relay
                 .submit_action(
                     &request.contract_address,
-                    "submit_signing_bundle_v2",
+                    action_name,
                     &rpc,
                     DEFAULT_ACTION_GAS,
                 )
@@ -792,251 +783,11 @@ async fn run_reuse_sign_workflow(
                 .log(
                     job_id,
                     format!(
-                        "submitted submit_signing_bundle_v2 on {} tx {}",
-                        submitted.node_url, submitted.tx_hash
+                        "submitted {} on {} tx {}",
+                        action_name, submitted.node_url, submitted.tx_hash
                     ),
                 )
                 .await;
-        } else {
-            let delta_commits = signature
-                .deltas
-                .iter()
-                .map(|delta| {
-                    let delta_bytes = hex::decode(&delta.delta_i_hex)?;
-                    let commit_hash = sha2::Sha256::digest(&delta_bytes);
-                    Ok::<_, anyhow::Error>((
-                        delta.party_index,
-                        PipelineAction {
-                            action: "commit_delta".to_string(),
-                            payload: action_builders::build_commit_delta_rpc(
-                                request.key_id,
-                                delta.party_index,
-                                commit_hash.as_slice(),
-                            ),
-                            gas_cost: DEFAULT_ACTION_GAS,
-                        },
-                    ))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let committed_deltas = submit_pipeline_with_fallback(
-                &state,
-                &request.contract_address,
-                delta_commits
-                    .iter()
-                    .map(|(_, action)| action.clone())
-                    .collect::<Vec<_>>(),
-            )
-            .await?;
-            for ((party_index, _), committed) in
-                delta_commits.iter().zip(committed_deltas.into_iter())
-            {
-                state
-                    .jobs
-                    .log(
-                        job_id,
-                        format!(
-                            "submitted commit_delta for party {} on {} tx {}",
-                            party_index, committed.node_url, committed.tx_hash
-                        ),
-                    )
-                    .await;
-            }
-
-            let delta_submissions = signature
-                .deltas
-                .iter()
-                .map(|delta| {
-                    let delta_bytes = hex::decode(&delta.delta_i_hex)?;
-                    Ok::<_, anyhow::Error>((
-                        delta.party_index,
-                        PipelineAction {
-                            action: "submit_delta".to_string(),
-                            payload: action_builders::build_submit_delta_rpc(
-                                request.key_id,
-                                delta.party_index,
-                                &delta_bytes,
-                            ),
-                            gas_cost: DEFAULT_ACTION_GAS,
-                        },
-                    ))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let submitted_deltas = submit_pipeline_with_fallback(
-                &state,
-                &request.contract_address,
-                delta_submissions
-                    .iter()
-                    .map(|(_, action)| action.clone())
-                    .collect::<Vec<_>>(),
-            )
-            .await?;
-            for ((party_index, _), submitted) in
-                delta_submissions.iter().zip(submitted_deltas.into_iter())
-            {
-                state
-                    .jobs
-                    .log(
-                        job_id,
-                        format!(
-                            "submitted submit_delta for party {} on {} tx {}",
-                            party_index, submitted.node_url, submitted.tx_hash
-                        ),
-                    )
-                    .await;
-            }
-
-            let gamma_actions = signature
-                .gamma_points_hex
-                .iter()
-                .enumerate()
-                .map(|(idx, gamma_point_hex)| {
-                    let party_index = request.signing_parties[idx];
-                    Ok::<_, anyhow::Error>((
-                        party_index,
-                        PipelineAction {
-                            action: "submit_gamma_point".to_string(),
-                            payload: action_builders::build_submit_gamma_point_rpc(
-                                request.key_id,
-                                party_index,
-                                &hex::decode(gamma_point_hex)?,
-                            ),
-                            gas_cost: DEFAULT_ACTION_GAS,
-                        },
-                    ))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let submitted_gammas = submit_pipeline_with_fallback(
-                &state,
-                &request.contract_address,
-                gamma_actions
-                    .iter()
-                    .map(|(_, action)| action.clone())
-                    .collect::<Vec<_>>(),
-            )
-            .await?;
-            for ((party_index, _), gamma_submitted) in
-                gamma_actions.iter().zip(submitted_gammas.into_iter())
-            {
-                state
-                    .jobs
-                    .log(
-                        job_id,
-                        format!(
-                            "submitted submit_gamma_point for party {} on {} tx {}",
-                            party_index, gamma_submitted.node_url, gamma_submitted.tx_hash
-                        ),
-                    )
-                    .await;
-            }
-
-            let finalize_r_rpc = action_builders::build_gg20_finalize_r_rpc(request.key_id);
-            let finalized_r = state
-                .chain_relay
-                .submit_action(
-                    &request.contract_address,
-                    "gg20_finalize_r",
-                    &finalize_r_rpc,
-                    DEFAULT_ACTION_GAS,
-                )
-                .await?;
-            state
-                .jobs
-                .log(
-                    job_id,
-                    format!(
-                        "submitted gg20_finalize_r on {} tx {}",
-                        finalized_r.node_url, finalized_r.tx_hash
-                    ),
-                )
-                .await;
-
-            let partial_commits = signature
-                .partials
-                .iter()
-                .map(|partial| {
-                    let partial_bytes = hex::decode(&partial.s_i_hex)?;
-                    let commit_hash = sha2::Sha256::digest(&partial_bytes);
-                    Ok::<_, anyhow::Error>((
-                        partial.party_index,
-                        PipelineAction {
-                            action: "commit_partial_sig".to_string(),
-                            payload: action_builders::build_commit_partial_sig_rpc(
-                                request.key_id,
-                                partial.party_index,
-                                commit_hash.as_slice(),
-                            ),
-                            gas_cost: DEFAULT_ACTION_GAS,
-                        },
-                    ))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let committed_partials = submit_pipeline_with_fallback(
-                &state,
-                &request.contract_address,
-                partial_commits
-                    .iter()
-                    .map(|(_, action)| action.clone())
-                    .collect::<Vec<_>>(),
-            )
-            .await?;
-            for ((party_index, _), committed) in
-                partial_commits.iter().zip(committed_partials.into_iter())
-            {
-                state
-                    .jobs
-                    .log(
-                        job_id,
-                        format!(
-                            "submitted commit_partial_sig for party {} on {} tx {}",
-                            party_index, committed.node_url, committed.tx_hash
-                        ),
-                    )
-                    .await;
-            }
-
-            let partial_submissions = signature
-                .partials
-                .iter()
-                .map(|partial| {
-                    let partial_bytes = hex::decode(&partial.s_i_hex)?;
-                    Ok::<_, anyhow::Error>((
-                        partial.party_index,
-                        PipelineAction {
-                            action: "submit_partial_sig".to_string(),
-                            payload: action_builders::build_submit_partial_sig_rpc(
-                                request.key_id,
-                                partial.party_index,
-                                &partial_bytes,
-                            ),
-                            gas_cost: DEFAULT_ACTION_GAS,
-                        },
-                    ))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let submitted_partials = submit_pipeline_with_fallback(
-                &state,
-                &request.contract_address,
-                partial_submissions
-                    .iter()
-                    .map(|(_, action)| action.clone())
-                    .collect::<Vec<_>>(),
-            )
-            .await?;
-            for ((party_index, _), revealed) in partial_submissions
-                .iter()
-                .zip(submitted_partials.into_iter())
-            {
-                state
-                    .jobs
-                    .log(
-                        job_id,
-                        format!(
-                            "submitted submit_partial_sig for party {} on {} tx {}",
-                            party_index, revealed.node_url, revealed.tx_hash
-                        ),
-                    )
-                    .await;
-            }
         }
     }
 
@@ -1431,6 +1182,10 @@ mod tests {
     fn test_state() -> AppState {
         let config = Config {
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            cors_allowed_origins: vec![
+                "http://localhost:5173".to_string(),
+                "http://127.0.0.1:5173".to_string(),
+            ],
             database_url: None,
             log_filter: "info".to_string(),
             service_name: "test".to_string(),

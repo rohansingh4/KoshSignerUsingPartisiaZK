@@ -24,7 +24,7 @@ SEPOLIA_RPC_URL="${SEPOLIA_RPC_URL:-}"
 EVM_FROM="${EVM_FROM:-}"
 KEEP_BACKEND_RUNNING="${KEEP_BACKEND_RUNNING:-1}"
 SKIP_CREATE="${SKIP_CREATE:-0}"
-SIGNING_MODE="${SIGNING_MODE:-v1}"
+SIGNING_MODE="${SIGNING_MODE:-v2}"
 KOSH_PARTISIA_POLL_INTERVAL_MS="${KOSH_PARTISIA_POLL_INTERVAL_MS:-500}"
 LOG_DIR="${LOG_DIR:-/tmp/kosh-rust-backend-live}"
 mkdir -p "$LOG_DIR"
@@ -214,11 +214,7 @@ if [[ -n "$SEPOLIA_TO" ]]; then
 fi
 
 echo "[7/7] reuse-sign same key_id=$KEY_ID"
-if [[ "$SIGNING_MODE" == "v2" ]]; then
-  REUSE_ENDPOINT="$BACKEND_URL/api/v2/workflows/reuse-sign"
-else
-  REUSE_ENDPOINT="$BACKEND_URL/api/v1/workflows/reuse-sign"
-fi
+REUSE_ENDPOINT="$BACKEND_URL/api/v2/workflows/reuse-sign"
 REUSE_RESP="$(curl -sS -X POST "$REUSE_ENDPOINT" -H 'Content-Type: application/json' -d "{\"contract_address\":\"$CONTRACT_ADDRESS\",\"key_id\":$KEY_ID,\"tx_tag\":\"eth_transfer\",\"signing_parties\":[1,2],\"threshold\":2,\"msg_hash_hex\":\"$MSG_HASH_HEX\",\"session_id\":1}")"
 echo "$REUSE_RESP"
 REUSE_JOB_ID="$(printf '%s' "$REUSE_RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["job"]["id"])')"
