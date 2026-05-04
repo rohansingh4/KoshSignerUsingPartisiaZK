@@ -16,6 +16,8 @@ PARTISIA_SENDER_KEY="${PARTISIA_SENDER_KEY:-cea538ce0bc3b7f4bcbb3bbea6eb2d26d76c
 PARTISIA_SENDER_ADDRESS="${PARTISIA_SENDER_ADDRESS:-0070df8630bd853487c025e6e2b0eac733aa79481d}"
 KOSH_PARTISIA_POLL_INTERVAL_MS="${KOSH_PARTISIA_POLL_INTERVAL_MS:-500}"
 KOSH_CORS_ALLOWED_ORIGINS="${KOSH_CORS_ALLOWED_ORIGINS:-http://localhost:${FRONTEND_PORT},http://127.0.0.1:${FRONTEND_PORT}}"
+MIN_PARTISIA_GAS_BALANCE="${MIN_PARTISIA_GAS_BALANCE:-12000}"
+AUTO_TOP_UP_PARTISIA_GAS="${AUTO_TOP_UP_PARTISIA_GAS:-1}"
 LOG_DIR="${LOG_DIR:-/tmp/kosh-frontend-v2-stack}"
 mkdir -p "$LOG_DIR"
 BACKEND_LOG="$LOG_DIR/backend.log"
@@ -30,6 +32,29 @@ cleanup() {
   fi
 }
 trap cleanup EXIT INT TERM
+
+partisia_gas_balance() {
+  cargo pbc account --net=testnet show "$PARTISIA_SENDER_ADDRESS" 2>/dev/null     | python3 -c 'import json,sys; data=json.load(sys.stdin); coins=data.get("account",{}).get("accountCoins",[]); vals=[]
+for coin in coins:
+    try: vals.append(int(coin.get("balance","0")))
+    except: pass
+print(max(vals) if vals else 0)'
+}
+
+top_up_partisia_gas_if_needed() {
+  if [[ "$AUTO_TOP_UP_PARTISIA_GAS" != "1" ]]; then
+    return
+  fi
+  local balance="$(partisia_gas_balance || echo 0)"
+  echo "current Partisia gas balance: $balance"
+  while [[ "$balance" -lt "$MIN_PARTISIA_GAS_BALANCE" ]]; do
+    echo "minting Partisia gas for $PARTISIA_SENDER_ADDRESS"
+    cargo pbc account --net=testnet mintgas "$PARTISIA_SENDER_ADDRESS"
+    sleep 1
+    balance="$(partisia_gas_balance || echo 0)"
+    echo "updated Partisia gas balance: $balance"
+  done
+}
 
 backend_healthy() {
   curl -sS "$BACKEND_URL/api/v1/health" >/dev/null 2>&1
@@ -57,6 +82,7 @@ export KOSH_PARTISIA_POLL_INTERVAL_MS
 export KOSH_CORS_ALLOWED_ORIGINS
 
 cd "$ROOT_DIR"
+top_up_partisia_gas_if_needed
 echo "starting Rust backend on $BACKEND_URL"
 cargo run -p kosh-backend >"$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!

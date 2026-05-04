@@ -10,13 +10,17 @@ use crate::{
         ListTopicsResponse, LoadPartyRuntimeQuery, LoadPartyRuntimeResponse, LoadSecretResponse,
         MtAFinalizeRequest, MtAFinalizeResponse, MtARound1Request, MtARound1Response,
         MtARound2Request, MtARound2Response, PaillierKeygenRequest, PaillierKeygenResponse,
-        PostTopicRequest, PostTopicResponse, ReadTopicQuery, ReadTopicResponse,
-        RelayContractStateResponse, RelayHealthResponse, RuntimePreflightQuery,
-        RuntimePreflightResponse, StartCreateKeyWorkflowRequest, StartReuseSignWorkflowRequest,
-        StorePartyRuntimeRequest, StorePartyRuntimeResponse, StoreSecretRequest,
-        StoreSecretResponse, ThresholdKeyStatusQuery, ThresholdKeyStatusResponse,
-        ThresholdTaskSignatureQuery, ThresholdTaskSignatureResponse, ValidatePolicyRequest,
-        ValidatePolicyResponse, VerifySubshareRequest, VerifySubshareResponse,
+        PasskeyAuthFinishRequest, PasskeyAuthFinishResponse, PasskeyAuthStartResponse,
+        PasskeyCreateKeyRequest, PasskeyKeysResponse, PasskeyLinkKeyRequest, PasskeyLinkKeyResponse, PasskeyMeResponse,
+        PasskeyRegisterFinishRequest, PasskeyRegisterFinishResponse, PasskeyRegisterStartRequest,
+        PasskeyRegisterStartResponse, PasskeyReuseSignRequest, PasskeySelectKeyRequest, PostTopicRequest, PostTopicResponse,
+        ReadTopicQuery, ReadTopicResponse, RelayContractStateResponse, RelayHealthResponse,
+        RuntimePreflightQuery, RuntimePreflightResponse, StartCreateKeyWorkflowRequest,
+        StartReuseSignWorkflowRequest, StorePartyRuntimeRequest, StorePartyRuntimeResponse,
+        StoreSecretRequest, StoreSecretResponse, ThresholdKeyStatusQuery,
+        ThresholdKeyStatusResponse, ThresholdTaskSignatureQuery, ThresholdTaskSignatureResponse,
+        ValidatePolicyRequest, ValidatePolicyResponse, VerifySubshareRequest,
+        VerifySubshareResponse,
     },
     app::AppState,
     evm_broadcaster::UnsignedEthTransfer,
@@ -26,7 +30,7 @@ use crate::{
 };
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
@@ -44,6 +48,22 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/jobs/:job_id", get(get_job))
         .route("/api/v1/jobs/:job_id/events", get(stream_job_events))
         .route("/api/v1/runtime/active", get(active_runtime))
+        .route(
+            "/api/v1/passkeys/register/start",
+            post(passkey_register_start),
+        )
+        .route(
+            "/api/v1/passkeys/register/finish",
+            post(passkey_register_finish),
+        )
+        .route("/api/v1/passkeys/auth/start", post(passkey_auth_start))
+        .route("/api/v1/passkeys/auth/finish", post(passkey_auth_finish))
+        .route("/api/v1/passkeys/me", get(passkey_me))
+        .route("/api/v1/passkeys/keys", get(passkey_keys))
+        .route("/api/v1/passkeys/link-key", post(passkey_link_key))
+        .route("/api/v1/passkeys/select-key", post(passkey_select_key))
+        .route("/api/v1/passkeys/create-key", post(passkey_create_key))
+        .route("/api/v1/passkeys/reuse-sign", post(passkey_reuse_sign))
         .route(
             "/api/v1/coordinator/topics",
             post(post_topic).get(list_topics).delete(clear_topics),
@@ -103,6 +123,298 @@ pub fn router(state: AppState) -> Router {
             post(broadcast_signed_transaction),
         )
         .with_state(state)
+}
+
+fn session_token(headers: &HeaderMap) -> Result<String, (StatusCode, String)> {
+    headers
+        .get("x-kosh-session")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.to_string())
+        .ok_or((
+            StatusCode::UNAUTHORIZED,
+            "missing x-kosh-session header".to_string(),
+        ))
+}
+
+async fn passkey_create_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PasskeyCreateKeyRequest>,
+) -> impl IntoResponse {
+    let token = match session_token(&headers) {
+        Ok(token) => token,
+        Err((status, message)) => return (status, message).into_response(),
+    };
+    let key_id = match next_available_key_id(&state, &payload.contract_address).await {
+        Ok(key_id) => key_id,
+        Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
+    };
+    let job = orchestrator::start_create_key_workflow(
+        state,
+        crate::orchestrator::CreateKeyWorkflowRequest {
+            contract_address: payload.contract_address.clone(),
+            key_id,
+            num_parties: payload.num_parties,
+            seed_hex: payload.seed_hex,
+        },
+    )
+    .await;
+    let _ = token;
+    (StatusCode::CREATED, Json(CreateJobResponse { job })).into_response()
+}
+
+async fn passkey_reuse_sign(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PasskeyReuseSignRequest>,
+) -> impl IntoResponse {
+    let token = match session_token(&headers) {
+        Ok(token) => token,
+        Err((status, message)) => return (status, message).into_response(),
+    };
+    let linked = match state.passkeys.selected_key(&token).await {
+        Ok(linked) => linked,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+    let job = orchestrator::start_reuse_sign_v2_workflow(
+        state,
+        crate::orchestrator::ReuseSignWorkflowRequest {
+            contract_address: linked.contract_address,
+            key_id: linked.key_id,
+            tx_tag: payload.tx_tag,
+            signing_parties: payload.signing_parties,
+            threshold: payload.threshold,
+            msg_hash_hex: payload.msg_hash_hex,
+            session_id: payload.session_id,
+            signed_tx_hex: payload.signed_tx_hex,
+        },
+    )
+    .await;
+    (StatusCode::CREATED, Json(CreateJobResponse { job })).into_response()
+}
+
+async fn passkey_register_start(
+    State(state): State<AppState>,
+    Json(payload): Json<PasskeyRegisterStartRequest>,
+) -> impl IntoResponse {
+    let link_key = match (payload.contract_address, payload.key_id) {
+        (Some(contract_address), Some(key_id)) => Some(crate::passkeys::LinkedKey {
+            label: payload
+                .label
+                .clone()
+                .unwrap_or_else(|| format!("Key {key_id}")),
+            contract_address,
+            key_id,
+        }),
+        _ => None,
+    };
+    match state
+        .passkeys
+        .start_registration(
+            payload.label.unwrap_or_else(|| "Kosh Passkey".to_string()),
+            link_key,
+        )
+        .await
+    {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(PasskeyRegisterStartResponse {
+                registration_id: result.registration_id.to_string(),
+                options: result.options,
+            }),
+        )
+            .into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    }
+}
+
+async fn passkey_register_finish(
+    State(state): State<AppState>,
+    Json(payload): Json<PasskeyRegisterFinishRequest>,
+) -> impl IntoResponse {
+    let registration_id = match Uuid::parse_str(&payload.registration_id) {
+        Ok(id) => id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid registration_id: {err}"),
+            )
+                .into_response()
+        }
+    };
+    match state
+        .passkeys
+        .finish_registration(registration_id, payload.credential)
+        .await
+    {
+        Ok((session, account)) => (
+            StatusCode::OK,
+            Json(PasskeyRegisterFinishResponse {
+                session_token: session.token,
+                account,
+            }),
+        )
+            .into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    }
+}
+
+async fn passkey_auth_start(State(state): State<AppState>) -> impl IntoResponse {
+    match state.passkeys.start_authentication().await {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(PasskeyAuthStartResponse {
+                authentication_id: result.authentication_id.to_string(),
+                options: result.options,
+            }),
+        )
+            .into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    }
+}
+
+async fn passkey_auth_finish(
+    State(state): State<AppState>,
+    Json(payload): Json<PasskeyAuthFinishRequest>,
+) -> impl IntoResponse {
+    let authentication_id = match Uuid::parse_str(&payload.authentication_id) {
+        Ok(id) => id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid authentication_id: {err}"),
+            )
+                .into_response()
+        }
+    };
+    match state
+        .passkeys
+        .finish_authentication(authentication_id, payload.credential)
+        .await
+    {
+        Ok((session, account)) => (
+            StatusCode::OK,
+            Json(PasskeyAuthFinishResponse {
+                session_token: session.token,
+                account,
+            }),
+        )
+            .into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    }
+}
+
+async fn passkey_me(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let token = match session_token(&headers) {
+        Ok(token) => token,
+        Err((status, message)) => return (status, message).into_response(),
+    };
+    match state.passkeys.me(&token).await {
+        Ok(me) => (StatusCode::OK, Json(PasskeyMeResponse { ok: true, me })).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    }
+}
+
+async fn passkey_keys(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let token = match session_token(&headers) {
+        Ok(token) => token,
+        Err((status, message)) => return (status, message).into_response(),
+    };
+    match state.passkeys.me(&token).await {
+        Ok(me) => {
+            let account = me.account.unwrap_or(crate::passkeys::PasskeyAccount {
+                account_id: Uuid::nil(),
+                label: String::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
+                credentials: vec![],
+                linked_keys: vec![],
+                selected_key: None,
+            });
+            (
+                StatusCode::OK,
+                Json(PasskeyKeysResponse {
+                    keys: account.linked_keys,
+                    selected_key: account.selected_key,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    }
+}
+
+async fn passkey_link_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PasskeyLinkKeyRequest>,
+) -> impl IntoResponse {
+    let token = match session_token(&headers) {
+        Ok(token) => token,
+        Err((status, message)) => return (status, message).into_response(),
+    };
+    match state
+        .passkeys
+        .link_key(
+            &token,
+            crate::passkeys::LinkedKey {
+                contract_address: payload.contract_address,
+                key_id: payload.key_id,
+                label: payload
+                    .label
+                    .unwrap_or_else(|| format!("Key {}", payload.key_id)),
+            },
+        )
+        .await
+    {
+        Ok(account) => (
+            StatusCode::OK,
+            Json(PasskeyLinkKeyResponse { ok: true, account }),
+        )
+            .into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    }
+}
+
+async fn passkey_select_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PasskeySelectKeyRequest>,
+) -> impl IntoResponse {
+    let token = match session_token(&headers) {
+        Ok(token) => token,
+        Err((status, message)) => return (status, message).into_response(),
+    };
+    match state
+        .passkeys
+        .select_key(&token, &payload.contract_address, payload.key_id)
+        .await
+    {
+        Ok(account) => (
+            StatusCode::OK,
+            Json(PasskeyLinkKeyResponse { ok: true, account }),
+        )
+            .into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    }
+}
+
+async fn next_available_key_id(state: &AppState, contract_address: &str) -> Result<u32, String> {
+    for _ in 0..32 {
+        let candidate: u32 = 10000 + (rand::random::<u32>() % (u32::MAX - 10000));
+        match state.chain_relay.get_contract_data(contract_address).await {
+            Ok(contract_state) => {
+                match threshold_read::threshold_key_status(&contract_state, candidate).await {
+                    Ok(status) if !status.exists => return Ok(candidate),
+                    Ok(_) => continue,
+                    Err(_) => return Ok(candidate),
+                }
+            }
+            Err(_) => return Ok(candidate),
+        }
+    }
+    Err("failed to allocate a free key id".to_string())
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {

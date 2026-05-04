@@ -103,6 +103,7 @@ pub fn build_pqc_approval_payload(
     tx_tag: &str,
     signing_subset: &[u8],
     challenge: &[u8],
+    expires_at_block: i64,
 ) -> Vec<u8> {
     concat_bytes(&[
         b"KOSH_PQC_APPROVAL_V1",
@@ -113,6 +114,8 @@ pub fn build_pqc_approval_payload(
         &encode_len_prefixed(tx_tag.as_bytes()),
         &encode_party_vector(signing_subset),
         &encode_len_prefixed(challenge),
+        // Bind to session deadline — prevents replay on a renewed session
+        &expires_at_block.to_be_bytes(),
     ])
 }
 
@@ -124,6 +127,7 @@ pub fn compute_pqc_approval_hash(
     tx_tag: &str,
     signing_subset: &[u8],
     challenge: &[u8],
+    expires_at_block: i64,
 ) -> Vec<u8> {
     Sha256::digest(build_pqc_approval_payload(
         key_id,
@@ -133,6 +137,7 @@ pub fn compute_pqc_approval_hash(
         tx_tag,
         signing_subset,
         challenge,
+        expires_at_block,
     ))
     .to_vec()
 }

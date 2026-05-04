@@ -29,6 +29,7 @@ pub struct CreateKeyWorkflowResult {
     pub key_id: u32,
     pub num_parties: u8,
     pub public_key_hex: String,
+    pub evm_address: Option<String>,
     pub runtimes_persisted: usize,
 }
 
@@ -372,11 +373,13 @@ async fn run_create_key_workflow(
             .await;
     }
 
+    let evm_address = threshold_read::public_key_hex_to_evm_address(&public_key_hex).ok();
     let result = CreateKeyWorkflowResult {
         contract_address: request.contract_address,
         key_id: request.key_id,
         num_parties: request.num_parties,
         public_key_hex,
+        evm_address,
         runtimes_persisted: persisted,
     };
     state
@@ -567,6 +570,23 @@ async fn run_reuse_sign_workflow(
             )
             .await;
 
+        // Read the contract state to get the deadline block set by the contract in
+        // start_pqc_approval_session. The approval hash must commit to this deadline
+        // so that approvals cannot be replayed on a renewed session with a different deadline.
+        let pqc_deadline_block = {
+            let raw = state
+                .chain_relay
+                .get_contract_data(&request.contract_address)
+                .await
+                .unwrap_or(serde_json::Value::Null);
+            threshold_read::decode_key_state(&raw, request.key_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|ks| ks.pqc_approval_deadline_block)
+                .unwrap_or(0i64)
+        };
+
         let approval_actions = request
             .signing_parties
             .iter()
@@ -579,6 +599,7 @@ async fn run_reuse_sign_workflow(
                     &request.tx_tag,
                     &request.signing_parties,
                     &challenge,
+                    pqc_deadline_block,
                 );
                 (
                     party_index,
@@ -1201,6 +1222,8 @@ mod tests {
             partisia_max_retries: 1,
             sepolia_rpc_url: None,
             sepolia_chain_id: 11155111,
+            webauthn_rp_id: "localhost".to_string(),
+            webauthn_origin: "http://localhost:5173".to_string(),
         };
 
         AppState {
@@ -1229,6 +1252,13 @@ mod tests {
             }),
             database: None,
             active_runtime: Arc::new(RwLock::new(None)),
+            passkeys: crate::passkeys::PasskeyManager::new(
+                temp_root("passkeys"),
+                "localhost",
+                "http://localhost:5173",
+                &["http://127.0.0.1:5173".to_string()],
+            )
+            .unwrap(),
         }
     }
 

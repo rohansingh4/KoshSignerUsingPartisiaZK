@@ -39,3 +39,6 @@ num-integer = "0.1"
 num-traits = "0.2"
 kosh-zk-signer = { path = "../contracts/kosh-zk-signer" }
 pbc_traits.workspace = true
+
+webauthn-rs = { version = "0.5.4", features = ["conditional-ui"] }
+url = "2"

@@ -18,6 +18,8 @@ pub struct Config {
     pub partisia_max_retries: u32,
     pub sepolia_rpc_url: Option<String>,
     pub sepolia_chain_id: u64,
+    pub webauthn_rp_id: String,
+    pub webauthn_origin: String,
 }
 
 impl Config {
@@ -85,6 +87,10 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(11155111);
+        let webauthn_rp_id =
+            env::var("KOSH_WEBAUTHN_RP_ID").unwrap_or_else(|_| "localhost".to_string());
+        let webauthn_origin = env::var("KOSH_WEBAUTHN_ORIGIN")
+            .unwrap_or_else(|_| "http://localhost:5173".to_string());
 
         Ok(Self {
             bind_addr,
@@ -102,6 +108,8 @@ impl Config {
             partisia_max_retries,
             sepolia_rpc_url,
             sepolia_chain_id,
+            webauthn_rp_id,
+            webauthn_origin,
         })
     }
 }

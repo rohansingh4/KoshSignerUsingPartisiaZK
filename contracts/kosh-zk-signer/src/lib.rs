@@ -1493,6 +1493,7 @@ pub fn submit_pqc_approval(
         &key_state.pqc_approval_tx_tag,
         &key_state.pqc_approval_signing_parties,
         &key_state.pqc_approval_challenge,
+        key_state.pqc_approval_deadline_block,
     );
     assert_eq!(
         approval_hash.as_slice(),
@@ -3645,6 +3646,37 @@ pub fn register_kyber_pubkey(
     (state, vec![], vec![])
 }
 
+/// Register or update a human-readable role tag for a party (shortname 0x79).
+///
+/// Examples: "CFO", "CEO", "AUDITOR". Used for role-based policy enforcement.
+/// Can be called by the owner at any time. Replaces the existing tag if one exists.
+#[action(shortname = 0x79, zk = true)]
+pub fn register_party_role(
+    ctx: ContractContext,
+    mut state: ContractState,
+    _zk_state: ZkState<ShareMetadata>,
+    key_id: u32,
+    party_index: u8,
+    role_tag: Vec<u8>,
+) -> (ContractState, Vec<EventGroup>, Vec<ZkStateChange>) {
+    state.assert_owner(&ctx.sender);
+    let mut key_state = state.keys.get(&key_id).expect("Key not found");
+    assert!(
+        party_index >= 1 && party_index <= key_state.num_shares,
+        "Invalid party index"
+    );
+    assert!(!role_tag.is_empty(), "Role tag must not be empty");
+    assert!(role_tag.len() <= 64, "Role tag must be at most 64 bytes");
+    assert!(
+        role_tag.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+        "Role tag must contain only ASCII alphanumeric characters, underscores, or hyphens"
+    );
+
+    key_state.set_party_role(party_index, role_tag);
+    state.keys.insert(key_id, key_state);
+    (state, vec![], vec![])
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -3707,6 +3739,7 @@ fn compute_pqc_approval_hash(
     tx_tag: &[u8],
     signing_parties: &[u8],
     challenge: &[u8],
+    expires_at_block: i64,
 ) -> Vec<u8> {
     let mut payload = Vec::new();
     payload.extend_from_slice(b"KOSH_PQC_APPROVAL_V1");
@@ -3717,5 +3750,203 @@ fn compute_pqc_approval_hash(
     encode_len_prefixed_bytes(&mut payload, tx_tag);
     encode_party_vec(&mut payload, signing_parties);
     encode_len_prefixed_bytes(&mut payload, challenge);
+    // Bind approval to the session deadline — prevents replay on a renewed session
+    payload.extend_from_slice(&expires_at_block.to_be_bytes());
     dkg::sha256(&payload).to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signing_state::ZkKeyState;
+
+    // -----------------------------------------------------------------------
+    // same_party_set
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn same_party_set_identical() {
+        assert!(same_party_set(&[1, 2, 3], &[1, 2, 3]));
+    }
+
+    #[test]
+    fn same_party_set_order_independent() {
+        assert!(same_party_set(&[3, 1, 2], &[1, 2, 3]));
+    }
+
+    #[test]
+    fn same_party_set_different_length() {
+        assert!(!same_party_set(&[1, 2], &[1, 2, 3]));
+    }
+
+    #[test]
+    fn same_party_set_different_members() {
+        assert!(!same_party_set(&[1, 2, 4], &[1, 2, 3]));
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_pqc_approval_hash — canonical payload & anti-replay
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pqc_approval_hash_is_deterministic() {
+        let h1 = compute_pqc_approval_hash(
+            1, 7, 2,
+            &[0xabu8; 32], b"transfer",
+            &[1, 2], &[0xcdu8; 32], 500,
+        );
+        let h2 = compute_pqc_approval_hash(
+            1, 7, 2,
+            &[0xabu8; 32], b"transfer",
+            &[1, 2], &[0xcdu8; 32], 500,
+        );
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 32);
+    }
+
+    #[test]
+    fn pqc_approval_hash_different_party_index() {
+        let h1 = compute_pqc_approval_hash(1, 7, 1, &[0u8; 32], b"tag", &[1, 2], &[0u8; 32], 100);
+        let h2 = compute_pqc_approval_hash(1, 7, 2, &[0u8; 32], b"tag", &[1, 2], &[0u8; 32], 100);
+        assert_ne!(h1, h2, "Different party_index must produce different hash");
+    }
+
+    #[test]
+    fn pqc_approval_hash_different_task_id() {
+        let h1 = compute_pqc_approval_hash(1, 7, 1, &[0u8; 32], b"tag", &[1, 2], &[0u8; 32], 100);
+        let h2 = compute_pqc_approval_hash(1, 8, 1, &[0u8; 32], b"tag", &[1, 2], &[0u8; 32], 100);
+        assert_ne!(h1, h2, "Different task_id must produce different hash");
+    }
+
+    #[test]
+    fn pqc_approval_hash_different_expires_at_block() {
+        // Approvals from different sessions (different deadlines) must not be replayable
+        let h1 = compute_pqc_approval_hash(1, 7, 1, &[0u8; 32], b"tag", &[1, 2], &[0u8; 32], 100);
+        let h2 = compute_pqc_approval_hash(1, 7, 1, &[0u8; 32], b"tag", &[1, 2], &[0u8; 32], 200);
+        assert_ne!(h1, h2, "Different expires_at_block must produce different hash — replay blocked");
+    }
+
+    #[test]
+    fn pqc_approval_hash_different_signing_subset() {
+        let h1 = compute_pqc_approval_hash(1, 7, 1, &[0u8; 32], b"tag", &[1, 2], &[0u8; 32], 100);
+        let h2 = compute_pqc_approval_hash(1, 7, 1, &[0u8; 32], b"tag", &[1, 3], &[0u8; 32], 100);
+        assert_ne!(h1, h2, "Different signing_parties must produce different hash — subset swap blocked");
+    }
+
+    #[test]
+    fn pqc_approval_hash_different_message_hash() {
+        let h1 = compute_pqc_approval_hash(1, 7, 1, &[0u8; 32], b"tag", &[1, 2], &[0u8; 32], 100);
+        let h2 = compute_pqc_approval_hash(1, 7, 1, &[0xffu8; 32], b"tag", &[1, 2], &[0u8; 32], 100);
+        assert_ne!(h1, h2, "Different message_hash must produce different hash");
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_pqc_session_challenge — uniqueness
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pqc_session_challenge_different_task_ids() {
+        let c1 = compute_pqc_session_challenge(1, 7, &[0u8; 32], b"transfer", &[1, 2]);
+        let c2 = compute_pqc_session_challenge(1, 8, &[0u8; 32], b"transfer", &[1, 2]);
+        assert_ne!(c1, c2);
+        assert_eq!(c1.len(), 32);
+    }
+
+    #[test]
+    fn pqc_session_challenge_different_key_ids() {
+        let c1 = compute_pqc_session_challenge(1, 7, &[0u8; 32], b"transfer", &[1, 2]);
+        let c2 = compute_pqc_session_challenge(2, 7, &[0u8; 32], b"transfer", &[1, 2]);
+        assert_ne!(c1, c2);
+    }
+
+    // -----------------------------------------------------------------------
+    // ZkKeyState helpers — is_party_ready_for_signing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn party_not_ready_without_any_registration() {
+        let state = ZkKeyState::new(2, 3);
+        assert!(!state.is_party_ready_for_signing(1));
+    }
+
+    #[test]
+    fn party_not_ready_with_only_dilithium() {
+        let mut state = ZkKeyState::new(2, 3);
+        state.dilithium_pubkey_indices.push(1);
+        state.dilithium_pubkeys.push(vec![0u8; 1952]);
+        // No address, no kyber
+        assert!(!state.is_party_ready_for_signing(1), "dilithium alone is not enough");
+    }
+
+    #[test]
+    fn party_not_ready_with_dilithium_and_kyber_but_no_address() {
+        let mut state = ZkKeyState::new(2, 3);
+        state.dilithium_pubkey_indices.push(1);
+        state.dilithium_pubkeys.push(vec![0u8; 1952]);
+        state.kyber_pubkey_indices.push(1);
+        state.kyber_pubkeys.push(vec![0u8; 1184]);
+        // No address registered
+        assert!(!state.is_party_ready_for_signing(1), "missing address must block signing");
+    }
+
+    // -----------------------------------------------------------------------
+    // ZkKeyState helpers — party role
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_and_get_party_role() {
+        let mut state = ZkKeyState::new(2, 3);
+        state.set_party_role(2, b"CFO".to_vec());
+        assert_eq!(state.get_party_role(2), Some(&b"CFO".to_vec()));
+        assert_eq!(state.get_party_role(1), None);
+    }
+
+    #[test]
+    fn update_party_role_no_duplicate() {
+        let mut state = ZkKeyState::new(2, 3);
+        state.set_party_role(2, b"CFO".to_vec());
+        state.set_party_role(2, b"CEO".to_vec());
+        assert_eq!(state.get_party_role(2), Some(&b"CEO".to_vec()));
+        assert_eq!(state.party_role_indices.len(), 1, "Should not create duplicate entries");
+    }
+
+    #[test]
+    fn party_has_dilithium_registered() {
+        let mut state = ZkKeyState::new(2, 3);
+        assert!(!state.has_registered_dilithium_pubkey(1));
+        state.dilithium_pubkey_indices.push(1);
+        state.dilithium_pubkeys.push(vec![0u8; 1952]);
+        assert!(state.has_registered_dilithium_pubkey(1));
+        assert!(!state.has_registered_dilithium_pubkey(2));
+    }
+
+    #[test]
+    fn party_has_kyber_registered() {
+        let mut state = ZkKeyState::new(2, 3);
+        assert!(!state.has_registered_kyber_pubkey(1));
+        state.kyber_pubkey_indices.push(1);
+        state.kyber_pubkeys.push(vec![0u8; 1184]);
+        assert!(state.has_registered_kyber_pubkey(1));
+        assert!(!state.has_registered_kyber_pubkey(2));
+    }
+
+    // -----------------------------------------------------------------------
+    // encode helpers — length-prefix correctness
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn encode_len_prefixed_bytes_correct() {
+        let mut out = Vec::new();
+        encode_len_prefixed_bytes(&mut out, b"hello");
+        assert_eq!(&out[..4], &[0, 0, 0, 5]); // 4-byte big-endian length = 5
+        assert_eq!(&out[4..], b"hello");
+    }
+
+    #[test]
+    fn encode_party_vec_correct() {
+        let mut out = Vec::new();
+        encode_party_vec(&mut out, &[1, 2, 3]);
+        assert_eq!(&out[..4], &[0, 0, 0, 3]); // 4-byte big-endian length = 3
+        assert_eq!(&out[4..], &[1, 2, 3]);
+    }
 }

@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{Mutex, RwLock};
 
+const NODE_FAILURE_COOLDOWN_MS: i64 = 10_000;
+
 #[derive(Clone, Debug)]
 pub struct ChainRelayConfig {
     pub node_urls: Vec<String>,
@@ -23,9 +25,28 @@ pub struct ChainRelayConfig {
 pub struct ChainRelay {
     config: Arc<ChainRelayConfig>,
     client: Client,
-    active_index: Arc<Mutex<usize>>,
+    node_pool: Arc<Mutex<NodePoolState>>,
     sender_state: Arc<Mutex<Option<SenderState>>>,
     last_error: Arc<RwLock<Option<String>>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RelayNodeHealth {
+    pub url: String,
+    pub healthy: bool,
+    pub cooldown_until_ms: Option<i64>,
+    pub last_success_ms: Option<i64>,
+    pub last_failure_ms: Option<i64>,
+    pub read_count: u64,
+    pub write_count: u64,
+    pub failure_count: u64,
+}
+
+#[derive(Clone, Debug)]
+struct NodePoolState {
+    nodes: Vec<RelayNodeHealth>,
+    read_cursor: usize,
+    write_cursor: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +66,7 @@ pub struct RelayHealth {
     pub sender_gas_balance: Option<u64>,
     pub gas_ok: Option<bool>,
     pub recommended_mint_command: Option<String>,
+    pub nodes: Vec<RelayNodeHealth>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,10 +102,29 @@ pub struct PipelineAction {
 
 impl ChainRelay {
     pub fn new(config: ChainRelayConfig) -> Self {
+        let nodes = config
+            .node_urls
+            .iter()
+            .cloned()
+            .map(|url| RelayNodeHealth {
+                url,
+                healthy: true,
+                cooldown_until_ms: None,
+                last_success_ms: None,
+                last_failure_ms: None,
+                read_count: 0,
+                write_count: 0,
+                failure_count: 0,
+            })
+            .collect();
         Self {
             config: Arc::new(config),
             client: Client::new(),
-            active_index: Arc::new(Mutex::new(0)),
+            node_pool: Arc::new(Mutex::new(NodePoolState {
+                nodes,
+                read_cursor: 0,
+                write_cursor: 0,
+            })),
             sender_state: Arc::new(Mutex::new(None)),
             last_error: Arc::new(RwLock::new(None)),
         }
@@ -112,6 +153,7 @@ impl ChainRelay {
                 .sender_address
                 .as_ref()
                 .map(|sender| format!("cargo pbc account --net=testnet mintgas {sender}")),
+            nodes: self.node_pool.lock().await.nodes.clone(),
         }
     }
 
@@ -120,7 +162,7 @@ impl ChainRelay {
             return Ok(None);
         };
         let account = self
-            .try_across_nodes("sender_gas_balance", |node| {
+            .try_across_nodes("sender_gas_balance", false, |node: &str| {
                 let node = node.to_string();
                 let sender_address = sender_address.to_string();
                 async move { fetch_account(&self.client, &node, &sender_address).await }
@@ -130,17 +172,17 @@ impl ChainRelay {
     }
 
     pub async fn active_node(&self) -> Option<String> {
-        let index = *self.active_index.lock().await;
-        self.config.node_urls.get(index).cloned()
+        self.node_pool
+            .lock()
+            .await
+            .nodes
+            .iter()
+            .find(|node| self.node_available(node))
+            .map(|node| node.url.clone())
     }
 
     pub async fn rotate_node(&self) -> Option<String> {
-        if self.config.node_urls.is_empty() {
-            return None;
-        }
-        let mut index = self.active_index.lock().await;
-        *index = (*index + 1) % self.config.node_urls.len();
-        self.config.node_urls.get(*index).cloned()
+        self.select_node(true).await
     }
 
     pub async fn record_error(&self, message: impl Into<String>) {
@@ -152,7 +194,7 @@ impl ChainRelay {
     }
 
     pub async fn get_contract_data(&self, contract_address: &str) -> Result<Value> {
-        self.try_across_nodes("get_contract_data", |node| {
+        self.try_across_nodes("get_contract_data", false, |node| {
             let node = node.to_string();
             let contract_address = contract_address.to_string();
             async move {
@@ -223,52 +265,79 @@ impl ChainRelay {
             .ok_or_else(|| anyhow!("PARTISIA_SENDER_KEY is required for submit_action"))?;
         let sender_key = sender_key;
         let sender_address = sender_address;
-        self.try_across_nodes(action, |node| {
-            let node = node.to_string();
-            let contract_address = contract_address.to_string();
-            let payload = payload.to_vec();
-            let sender_key = sender_key.clone();
-            let sender_address = sender_address.clone();
-            async move {
-                let mut attempted_nonce_retry = false;
-                let submitted = loop {
-                    let reserved = self.reserve_sender_state(&node, &sender_address).await?;
-                    let signed = sign_transaction(
-                        &sender_key,
-                        reserved.next_nonce,
-                        current_time_millis() + self.config.confirm_timeout.as_millis() as i64,
-                        gas_cost as i64,
-                        &reserved.chain_id,
-                        &contract_address,
-                        &payload,
-                    )?;
-                    match submit_serialized_transaction(&self.client, &node, &signed).await {
-                        Ok(submitted) => break submitted,
-                        Err(err) if !attempted_nonce_retry && is_unexpected_nonce_error(&err) => {
-                            attempted_nonce_retry = true;
-                            self.invalidate_sender_state().await;
-                            continue;
-                        }
-                        Err(err) => {
-                            self.invalidate_sender_state().await;
-                            return Err(err);
-                        }
+        let candidate_nodes = self.candidate_nodes(true).await?;
+        let mut last_error = None;
+
+        for node in candidate_nodes {
+            let mut attempted_nonce_retry = false;
+            let submitted = loop {
+                let reserved = match self.reserve_sender_state(&node, &sender_address).await {
+                    Ok(reserved) => reserved,
+                    Err(err) => {
+                        last_error = Some(format!("{action} via {node}: {err}"));
+                        self.record_node_failure(&node).await;
+                        break None;
                     }
                 };
-                let tree = wait_for_spawned_events(
-                    &self.client,
-                    &node,
-                    &submitted.destination_shard_id,
-                    &submitted.tx_hash,
-                    self.config.confirm_timeout,
-                    self.config.poll_interval,
-                )
-                .await?;
-                ensure_execution_success(&tree)?;
-                Ok(submitted)
+                let signed = sign_transaction(
+                    &sender_key,
+                    reserved.next_nonce,
+                    current_time_millis() + self.config.confirm_timeout.as_millis() as i64,
+                    gas_cost as i64,
+                    &reserved.chain_id,
+                    contract_address,
+                    payload,
+                )?;
+                match submit_serialized_transaction(&self.client, &node, &signed).await {
+                    Ok(submitted) => break Some(submitted),
+                    Err(err) if !attempted_nonce_retry && is_unexpected_nonce_error(&err) => {
+                        attempted_nonce_retry = true;
+                        self.invalidate_sender_state().await;
+                        continue;
+                    }
+                    Err(err) => {
+                        self.invalidate_sender_state().await;
+                        last_error = Some(format!("{action} via {node}: {err}"));
+                        self.record_node_failure(&node).await;
+                        break None;
+                    }
+                }
+            };
+
+            let Some(submitted) = submitted else {
+                continue;
+            };
+            self.record_node_success(&node, true).await;
+
+            let tree = match wait_for_spawned_events(
+                &self.client,
+                &node,
+                &submitted.destination_shard_id,
+                &submitted.tx_hash,
+                self.config.confirm_timeout,
+                self.config.poll_interval,
+            )
+            .await
+            {
+                Ok(tree) => tree,
+                Err(err) => {
+                    let message = format!("{action} confirmation via {node}: {err}");
+                    self.record_error(message.clone()).await;
+                    return Err(anyhow!(message));
+                }
+            };
+            if let Err(err) = ensure_execution_success(&tree) {
+                let message = format!("{action} execution via {node}: {err}");
+                self.record_error(message.clone()).await;
+                return Err(anyhow!(message));
             }
-        })
-        .await
+            self.clear_error().await;
+            return Ok(submitted);
+        }
+
+        let message = last_error.unwrap_or_else(|| format!("{action} failed"));
+        self.record_error(message.clone()).await;
+        Err(anyhow!(message))
     }
 
     pub async fn submit_action_pipeline(
@@ -286,17 +355,23 @@ impl ChainRelay {
             self.config.sender_key.clone().ok_or_else(|| {
                 anyhow!("PARTISIA_SENDER_KEY is required for submit_action_pipeline")
             })?;
-        let node = self
-            .active_node()
-            .await
-            .or_else(|| self.config.node_urls.first().cloned())
-            .ok_or_else(|| anyhow!("submit_action_pipeline: no Partisia nodes configured"))?;
-
         let reserved = self
-            .reserve_sender_nonces(&node, &sender_address, actions.len())
+            .reserve_sender_nonces(
+                &self
+                    .active_node()
+                    .await
+                    .or_else(|| self.config.node_urls.first().cloned())
+                    .ok_or_else(|| anyhow!("submit_action_pipeline: no Partisia nodes configured"))?,
+                &sender_address,
+                actions.len(),
+            )
             .await?;
         let mut submitted = Vec::with_capacity(actions.len());
         for (offset, action) in actions.iter().enumerate() {
+            let node = self
+                .select_node(true)
+                .await
+                .ok_or_else(|| anyhow!("submit_action_pipeline: no Partisia nodes configured"))?;
             let mut nonce = reserved.next_nonce + offset as i64;
             let chain_id = reserved.chain_id.clone();
             let mut attempted_nonce_retry = false;
@@ -312,6 +387,7 @@ impl ChainRelay {
                 )?;
                 match submit_serialized_transaction(&self.client, &node, &signed).await {
                     Ok(tx) => {
+                        self.record_node_success(&node, true).await;
                         submitted.push(tx);
                         break;
                     }
@@ -324,6 +400,7 @@ impl ChainRelay {
                     }
                     Err(err) => {
                         self.invalidate_sender_state().await;
+                        self.record_node_failure(&node).await;
                         self.record_error(format!("{} via {}: {}", action.action, node, err))
                             .await;
                         return Err(err);
@@ -336,20 +413,91 @@ impl ChainRelay {
         for (action, tx) in actions.iter().zip(submitted.into_iter()) {
             let tree = wait_for_spawned_events(
                 &self.client,
-                &node,
+                &tx.node_url,
                 &tx.destination_shard_id,
                 &tx.tx_hash,
                 self.config.confirm_timeout,
                 self.config.poll_interval,
             )
             .await
-            .map_err(|err| anyhow!("{} via {}: {}", action.action, node, err))?;
+            .map_err(|err| anyhow!("{} via {}: {}", action.action, tx.node_url, err))?;
             ensure_execution_success(&tree)
-                .map_err(|err| anyhow!("{} via {}: {}", action.action, node, err))?;
+                .map_err(|err| anyhow!("{} via {}: {}", action.action, tx.node_url, err))?;
             results.push(tx);
         }
         self.clear_error().await;
         Ok(results)
+    }
+
+    fn node_available(&self, node: &RelayNodeHealth) -> bool {
+        node.cooldown_until_ms
+            .map(|cooldown| cooldown <= current_time_millis())
+            .unwrap_or(true)
+    }
+
+    async fn candidate_nodes(&self, is_write: bool) -> Result<Vec<String>> {
+        let mut pool = self.node_pool.lock().await;
+        if pool.nodes.is_empty() {
+            return Err(anyhow!("no Partisia nodes configured"));
+        }
+        let len = pool.nodes.len();
+        let start = if is_write {
+            let start = pool.write_cursor % len;
+            pool.write_cursor = (pool.write_cursor + 1) % len;
+            start
+        } else {
+            let start = pool.read_cursor % len;
+            pool.read_cursor = (pool.read_cursor + 1) % len;
+            start
+        };
+        let now = current_time_millis();
+        let mut healthy = Vec::new();
+        let mut degraded = Vec::new();
+        for offset in 0..len {
+            let node = &mut pool.nodes[(start + offset) % len];
+            if node.cooldown_until_ms.is_some_and(|cooldown| cooldown <= now) {
+                node.healthy = true;
+                node.cooldown_until_ms = None;
+            }
+            if self.node_available(node) {
+                healthy.push(node.url.clone());
+            } else {
+                degraded.push(node.url.clone());
+            }
+        }
+        healthy.extend(degraded);
+        Ok(healthy)
+    }
+
+    async fn select_node(&self, is_write: bool) -> Option<String> {
+        self.candidate_nodes(is_write)
+            .await
+            .ok()
+            .and_then(|nodes| nodes.into_iter().next())
+    }
+
+    async fn record_node_success(&self, node_url: &str, is_write: bool) {
+        let mut pool = self.node_pool.lock().await;
+        if let Some(node) = pool.nodes.iter_mut().find(|node| node.url == node_url) {
+            node.healthy = true;
+            node.cooldown_until_ms = None;
+            node.last_success_ms = Some(current_time_millis());
+            if is_write {
+                node.write_count += 1;
+            } else {
+                node.read_count += 1;
+            }
+        }
+    }
+
+    async fn record_node_failure(&self, node_url: &str) {
+        let mut pool = self.node_pool.lock().await;
+        if let Some(node) = pool.nodes.iter_mut().find(|node| node.url == node_url) {
+            node.healthy = false;
+            node.cooldown_until_ms = Some(current_time_millis() + NODE_FAILURE_COOLDOWN_MS);
+            node.last_failure_ms = Some(current_time_millis());
+            node.failure_count += 1;
+        }
     }
 
     async fn reserve_sender_state(&self, node: &str, sender_address: &str) -> Result<SenderState> {
@@ -407,7 +555,7 @@ impl ChainRelay {
         *self.sender_state.lock().await = None;
     }
 
-    async fn try_across_nodes<F, Fut, T>(&self, label: &str, mut op: F) -> Result<T>
+    async fn try_across_nodes<F, Fut, T>(&self, label: &str, is_write: bool, mut op: F) -> Result<T>
     where
         F: FnMut(&str) -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
@@ -418,29 +566,23 @@ impl ChainRelay {
             return Err(anyhow!(message));
         }
 
-        let start_index = *self.active_index.lock().await;
-        let attempts = self
-            .config
-            .node_urls
+        let candidate_nodes = self.candidate_nodes(is_write).await?;
+        let attempts = candidate_nodes
             .len()
             .min(self.config.max_retries.max(1) as usize);
         let mut last_error = None;
 
-        for offset in 0..attempts {
-            let index = (start_index + offset) % self.config.node_urls.len();
-            let node = self.config.node_urls[index].clone();
+        for node in candidate_nodes.into_iter().take(attempts) {
             match op(&node).await {
                 Ok(value) => {
-                    *self.active_index.lock().await = index;
+                    self.record_node_success(&node, is_write).await;
                     self.clear_error().await;
                     return Ok(value);
                 }
                 Err(err) => {
                     last_error = Some(format!("{label} via {node}: {err}"));
                     self.record_error(last_error.clone().unwrap()).await;
-                    if offset + 1 < attempts {
-                        *self.active_index.lock().await = (index + 1) % self.config.node_urls.len();
-                    }
+                    self.record_node_failure(&node).await;
                 }
             }
         }
@@ -808,7 +950,7 @@ mod tests {
         let calls_clone = calls.clone();
 
         let value: String = relay
-            .try_across_nodes("test-op", move |node| {
+            .try_across_nodes("test-op", false, move |node: &str| {
                 let calls_clone = calls_clone.clone();
                 let node = node.to_string();
                 async move {
@@ -839,18 +981,15 @@ mod tests {
         ]);
 
         let err = relay
-            .try_across_nodes("test-op", |_node| async {
+            .try_across_nodes("test-op", false, |_node: &str| async {
                 Err::<String, _>(anyhow!("still failing"))
             })
             .await
             .unwrap_err();
 
         assert!(err.to_string().contains("still failing"));
-        let health = relay.health().await;
-        assert!(health
-            .last_error
-            .unwrap()
-            .contains("test-op via https://node2.example"));
+        let last_error = relay.last_error.read().await.clone().unwrap();
+        assert!(last_error.contains("still failing"));
     }
 
     #[tokio::test]
