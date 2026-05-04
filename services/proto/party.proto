@@ -1,0 +1,60 @@
+syntax = "proto3";
+package kosh.party;
+option go_package = "github.com/kosh/party/pb";
+
+service PartyService {
+  rpc StartDkg(DkgRequest)     returns (stream DkgEvent);
+  rpc StartSign(SignRequest)   returns (stream SignEvent);
+  rpc GetStatus(StatusRequest) returns (StatusResponse);
+}
+
+message DkgRequest {
+  uint32 key_id      = 1;
+  uint32 num_parties = 2;
+  uint32 threshold   = 3;
+}
+
+message DkgEvent {
+  enum Phase {
+    DKG_START        = 0;
+    DKG_COMMITTED    = 1;
+    DKG_REVEALED     = 2;
+    DKG_SUBSHARES    = 3;
+    DKG_FINALIZED    = 4;
+    DKG_ZK_SUBMITTED = 5;
+    DKG_COMPLETE     = 6;
+    DKG_FAILED       = 7;
+  }
+  Phase  phase   = 1;
+  string message = 2;
+}
+
+message SignRequest {
+  uint32          key_id          = 1;
+  bytes           message_hash    = 2;
+  string          tx_tag          = 3;
+  repeated uint32 signing_subset  = 4;
+}
+
+message SignEvent {
+  enum Phase {
+    SIGN_START    = 0;
+    PQC_APPROVED  = 1;
+    GG20_ROUND1   = 2;
+    MTA_COMPLETE  = 3;
+    GG20_ROUND2   = 4;
+    PARTIAL_SIGS  = 5;
+    SIGN_COMPLETE = 6;
+    SIGN_FAILED   = 7;
+  }
+  Phase  phase     = 1;
+  string message   = 2;
+  bytes  signature = 3;
+}
+
+message StatusRequest  {}
+message StatusResponse {
+  uint32          party_index      = 1;
+  string          current_phase    = 2;
+  repeated uint32 active_key_ids   = 3;
+}

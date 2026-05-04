@@ -6,6 +6,8 @@ members = [
     "contracts/kosh-vault",
     # microservices
     "services/kosh-pqc",
+    "services/kosh-chain-relay",
+    "services/kosh-keystore",
 ]
 resolver = "2"
 

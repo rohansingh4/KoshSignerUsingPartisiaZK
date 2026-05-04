@@ -1,0 +1,34 @@
+syntax = "proto3";
+package kosh.pqc;
+option go_package = "github.com/kosh/pqc/pb";
+
+service PqcService {
+  rpc GetIdentity(GetIdentityRequest)       returns (GetIdentityResponse);
+  rpc Encapsulate(EncapsulateRequest)       returns (EncapsulateResponse);
+  rpc Decapsulate(DecapsulateRequest)       returns (DecapsulateResponse);
+  rpc EncryptPayload(EncryptPayloadRequest) returns (EncryptPayloadResponse);
+  rpc DecryptPayload(DecryptPayloadRequest) returns (DecryptPayloadResponse);
+  rpc Sign(SignRequest)                     returns (SignResponse);
+  rpc Verify(VerifyRequest)                 returns (VerifyResponse);
+}
+
+message GetIdentityRequest  {}
+message GetIdentityResponse { string kyber_pk_b64 = 1; string dilithium_pk_b64 = 2; }
+
+message EncapsulateRequest  { string recipient_kyber_pk_b64 = 1; }
+message EncapsulateResponse { string ciphertext_b64 = 1; string shared_secret_b64 = 2; }
+
+message DecapsulateRequest  { string ciphertext_b64 = 1; }
+message DecapsulateResponse { string shared_secret_b64 = 1; }
+
+message EncryptPayloadRequest  { string shared_secret_b64 = 1; bytes plaintext = 2; }
+message EncryptPayloadResponse { bytes ciphertext = 1; bytes nonce = 2; bytes tag = 3; }
+
+message DecryptPayloadRequest  { string shared_secret_b64 = 1; bytes ciphertext = 2; bytes nonce = 3; bytes tag = 4; }
+message DecryptPayloadResponse { bytes plaintext = 1; }
+
+message SignRequest  { bytes message = 1; }
+message SignResponse { bytes signature = 1; }
+
+message VerifyRequest  { string dilithium_pk_b64 = 1; bytes message = 2; bytes signature = 3; }
+message VerifyResponse { bool valid = 1; }

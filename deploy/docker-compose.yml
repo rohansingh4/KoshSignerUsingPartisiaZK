@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+
+  # ── Go services (no secrets) ──────────────────────────────────────────────
+
+  coordinator:
+    build:
+      context: ../services/kosh-coordinator
+      dockerfile: Dockerfile
+    ports: ["50051:50051"]
+    environment:
+      PORT: "50051"
+    restart: unless-stopped
+
+  policy:
+    build:
+      context: ../services/kosh-policy
+      dockerfile: Dockerfile
+    ports: ["50052:50052"]
+    volumes: ["policy-data:/data"]
+    environment:
+      PORT: "50052"
+      POLICY_FILE: "/data/policies.json"
+    restart: unless-stopped
+
+  # ── Rust services (hold secrets) ─────────────────────────────────────────
+
+  keystore-1:
+    build:
+      context: ..
+      dockerfile: services/kosh-keystore/Dockerfile
+    ports: ["50070:50070"]
+    volumes: ["keystore-1-data:/data"]
+    environment:
+      PORT: "50070"
+      SHARE_FILE_DIR: "/data"
+      SHARE_FILE_KEY: "${SHARE_FILE_KEY_1:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
+    restart: unless-stopped
+
+  chain-relay:
+    build:
+      context: ..
+      dockerfile: services/kosh-chain-relay/Dockerfile
+    ports: ["50053:50053"]
+    environment:
+      PORT: "50053"
+      PARTISIA_NODE_URLS: "${PARTISIA_NODE_URLS:-https://node1.testnet.partisiablockchain.com}"
+      PARTISIA_SENDER_KEY_1: "${PARTISIA_SENDER_KEY_1:-}"
+      PARTISIA_SENDER_ADDRESS_1: "${PARTISIA_SENDER_ADDRESS_1:-}"
+      PARTISIA_SENDER_KEY_2: "${PARTISIA_SENDER_KEY_2:-}"
+      PARTISIA_SENDER_ADDRESS_2: "${PARTISIA_SENDER_ADDRESS_2:-}"
+      PARTISIA_SENDER_KEY_3: "${PARTISIA_SENDER_KEY_3:-}"
+      PARTISIA_SENDER_ADDRESS_3: "${PARTISIA_SENDER_ADDRESS_3:-}"
+    restart: unless-stopped
+
+volumes:
+  policy-data:
+  keystore-1-data:

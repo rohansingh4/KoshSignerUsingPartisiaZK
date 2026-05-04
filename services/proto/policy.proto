@@ -1,0 +1,38 @@
+syntax = "proto3";
+package kosh.policy;
+option go_package = "github.com/kosh/policy/pb";
+
+service PolicyService {
+  rpc AddPolicy(AddPolicyRequest)       returns (AddPolicyResponse);
+  rpc RemovePolicy(RemovePolicyRequest) returns (RemovePolicyResponse);
+  rpc ListPolicies(ListPoliciesRequest) returns (ListPoliciesResponse);
+  rpc Validate(ValidateRequest)         returns (ValidateResponse);
+}
+
+message Policy {
+  uint32          id                = 1;
+  string          name              = 2;
+  string          tx_tag            = 3;
+  repeated uint32 mandatory_parties = 4;
+  uint32          min_threshold     = 5;
+  string          created_at        = 6;
+}
+
+message AddPolicyRequest  { Policy policy = 1; }
+message AddPolicyResponse { uint32 id = 1; }
+
+message RemovePolicyRequest  { uint32 id = 1; }
+message RemovePolicyResponse { bool ok = 1; }
+
+message ListPoliciesRequest  {}
+message ListPoliciesResponse { repeated Policy policies = 1; }
+
+message ValidateRequest {
+  string          tx_tag          = 1;
+  repeated uint32 signing_parties = 2;
+}
+message ValidateResponse {
+  bool            ok                = 1;
+  string          violation_message = 2;
+  repeated uint32 missing_parties   = 3;
+}
