@@ -10,6 +10,7 @@ mod keystore;
 mod observability;
 mod orchestrator;
 mod party_runtime;
+mod passkeys;
 mod policy;
 mod pqc;
 mod threshold_read;

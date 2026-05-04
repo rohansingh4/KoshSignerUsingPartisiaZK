@@ -487,6 +487,10 @@ fn normalize_hex(value: &str) -> String {
     }
 }
 
+pub fn public_key_hex_to_evm_address(public_key_hex: &str) -> Result<String> {
+    pub_key_to_evm_address(public_key_hex)
+}
+
 fn pub_key_to_evm_address(public_key_hex: &str) -> Result<String> {
     let normalized = public_key_hex.trim_start_matches("0x");
     let bytes = hex::decode(normalized).map_err(|err| anyhow!("invalid public key hex: {err}"))?;

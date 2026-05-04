@@ -10,6 +10,7 @@ use crate::{
         mta::{MtAMessage1, MtAMessage2, MtAOutputA, MtAOutputB, MtASessionContext},
         paillier::PaillierKeyPair,
     },
+    passkeys::{LinkedKey, PasskeyAccount, PasskeyMe},
     policy::{Policy, PolicyDecision, PolicyInput},
     threshold_read::{ThresholdKeyStatus, ThresholdTaskSignature},
 };
@@ -355,4 +356,95 @@ pub type BroadcastSignedTransactionResponse = BroadcastSignedTxResult;
 pub struct ActiveRuntimeResponse {
     pub ok: bool,
     pub runtime: Option<crate::app::ActiveRuntimeState>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasskeyRegisterStartRequest {
+    pub label: Option<String>,
+    pub contract_address: Option<String>,
+    pub key_id: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PasskeyRegisterStartResponse {
+    pub registration_id: String,
+    pub options: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasskeyRegisterFinishRequest {
+    pub registration_id: String,
+    pub credential: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PasskeyRegisterFinishResponse {
+    pub session_token: String,
+    pub account: PasskeyAccount,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PasskeyAuthStartResponse {
+    pub authentication_id: String,
+    pub options: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasskeyAuthFinishRequest {
+    pub authentication_id: String,
+    pub credential: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PasskeyAuthFinishResponse {
+    pub session_token: String,
+    pub account: PasskeyAccount,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PasskeyMeResponse {
+    pub ok: bool,
+    pub me: PasskeyMe,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasskeyLinkKeyRequest {
+    pub contract_address: String,
+    pub key_id: u32,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PasskeyLinkKeyResponse {
+    pub ok: bool,
+    pub account: PasskeyAccount,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PasskeyKeysResponse {
+    pub keys: Vec<LinkedKey>,
+    pub selected_key: Option<LinkedKey>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasskeySelectKeyRequest {
+    pub contract_address: String,
+    pub key_id: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasskeyCreateKeyRequest {
+    pub contract_address: String,
+    pub num_parties: u8,
+    pub seed_hex: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasskeyReuseSignRequest {
+    pub tx_tag: String,
+    pub signing_parties: Vec<u8>,
+    pub threshold: u8,
+    pub msg_hash_hex: String,
+    pub session_id: Option<u32>,
+    pub signed_tx_hex: Option<String>,
 }

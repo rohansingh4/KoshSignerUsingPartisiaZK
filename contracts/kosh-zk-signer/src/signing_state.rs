@@ -396,6 +396,12 @@ pub struct ZkKeyState {
     pub kyber_pubkey_indices: Vec<u8>,
     /// Kyber public keys (1184 bytes each for ML-KEM-768, parallel with indices).
     pub kyber_pubkeys: Vec<Vec<u8>>,
+
+    // --- Party role registry (role-based policy) ---
+    /// Party indices that have registered a role tag (parallel with party_role_tags).
+    pub party_role_indices: Vec<u8>,
+    /// Role tags for each registered party (UTF-8 bytes, e.g. b"CFO", b"CEO").
+    pub party_role_tags: Vec<Vec<u8>>,
 }
 
 impl ZkKeyState {
@@ -507,6 +513,8 @@ impl ZkKeyState {
             dilithium_pubkeys: Vec::new(),
             kyber_pubkey_indices: Vec::new(),
             kyber_pubkeys: Vec::new(),
+            party_role_indices: Vec::new(),
+            party_role_tags: Vec::new(),
         }
     }
 
@@ -610,6 +618,24 @@ impl ZkKeyState {
 
     pub fn is_active_signing_party(&self, party_index: u8) -> bool {
         self.gg20_signing_parties.contains(&party_index)
+    }
+
+    /// Register or update the role tag for a party.
+    pub fn set_party_role(&mut self, party_index: u8, role_tag: Vec<u8>) {
+        if let Some(idx) = self.party_role_indices.iter().position(|&i| i == party_index) {
+            self.party_role_tags[idx] = role_tag;
+        } else {
+            self.party_role_indices.push(party_index);
+            self.party_role_tags.push(role_tag);
+        }
+    }
+
+    /// Get the role tag for a party, if registered.
+    pub fn get_party_role(&self, party_index: u8) -> Option<&Vec<u8>> {
+        self.party_role_indices
+            .iter()
+            .position(|&i| i == party_index)
+            .map(|idx| &self.party_role_tags[idx])
     }
 
     pub fn is_pqc_approval_party(&self, party_index: u8) -> bool {

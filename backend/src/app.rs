@@ -6,6 +6,7 @@ use crate::{
     evm_broadcaster::{EvmBroadcaster, EvmBroadcasterConfig},
     jobs::JobManager,
     keystore::KeyStore,
+    passkeys::PasskeyManager,
     policy::PolicyStore,
 };
 use anyhow::{Context, Result};
@@ -38,6 +39,7 @@ pub struct AppState {
     pub evm_broadcaster: EvmBroadcaster,
     pub database: Option<PgPool>,
     pub active_runtime: Arc<RwLock<Option<ActiveRuntimeState>>>,
+    pub passkeys: PasskeyManager,
 }
 
 pub struct Application {
@@ -53,6 +55,7 @@ impl Application {
         let keystore = build_keystore(&config)?;
         let chain_relay = build_chain_relay(&config);
         let evm_broadcaster = build_evm_broadcaster(&config);
+        let passkeys = build_passkeys(&config)?;
         let state = AppState {
             config: Arc::clone(&config),
             jobs: JobManager::new(),
@@ -63,6 +66,7 @@ impl Application {
             evm_broadcaster,
             database,
             active_runtime: Arc::new(RwLock::new(None)),
+            passkeys,
         };
         let router = api::routes::router(state.clone()).layer(build_cors_layer(&config)?);
 
@@ -118,6 +122,20 @@ fn build_chain_relay(config: &Config) -> ChainRelay {
         poll_interval: config.partisia_poll_interval,
         max_retries: config.partisia_max_retries,
     })
+}
+
+fn build_passkeys(config: &Config) -> Result<PasskeyManager> {
+    let root = config
+        .keystore_root_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(".kosh-backend/keystore"))
+        .join("passkeys");
+    PasskeyManager::new(
+        root,
+        &config.webauthn_rp_id,
+        &config.webauthn_origin,
+        &config.cors_allowed_origins,
+    )
 }
 
 fn build_evm_broadcaster(config: &Config) -> EvmBroadcaster {

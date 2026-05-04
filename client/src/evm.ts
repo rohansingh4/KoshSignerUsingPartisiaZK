@@ -14,7 +14,7 @@ import { secp256k1 } from "@noble/curves/secp256k1";
 
 export const sepoliaClient = createPublicClient({
   chain: sepolia,
-  transport: http(),
+  transport: http("https://rpc.ankr.com/eth_sepolia"),
 });
 
 export const baseSepoliaClient = sepoliaClient;
