@@ -1,0 +1,43 @@
+[package]
+name = "kosh-party"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "kosh-party"
+path = "src/main.rs"
+
+[dependencies]
+tokio        = { version = "1", features = ["full"] }
+tonic        = "0.11"
+prost        = "0.12"
+futures      = "0.3"
+k256         = { version = "0.13", features = ["ecdsa", "arithmetic"] }
+sha2         = "0.10"
+hmac         = "0.12"
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+hex          = "0.4"
+base64       = { version = "0.22", features = ["std"] }
+anyhow       = "1"
+zeroize      = { version = "1", features = ["derive"] }
+num-bigint   = { version = "0.4", features = ["rand"] }
+num-traits   = "0.2"
+num-integer  = "0.1"
+rand         = "0.8"
+uuid         = { version = "1", features = ["v4"] }
+tracing      = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio-stream = "0.1"
+
+[[test]]
+name = "party_grpc_test"
+path = "tests/party_grpc_test.rs"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tonic = "0.11"
+prost = "0.12"
+
+[build-dependencies]
+tonic-build = "0.11"

@@ -25,6 +25,15 @@ zeroize      = { version = "1", features = ["derive"] }
 tracing      = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[[test]]
+name = "grpc_test"
+path = "tests/grpc_test.rs"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tonic = "0.11"
+prost = "0.12"
+
 [build-dependencies]
 tonic-build = "0.11"
 getrandom    = { version = "0.4", features = ["std"] }

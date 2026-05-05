@@ -8,3 +8,5 @@ client/dist/
 *.pk
 *.env
 pqc-identity-party*.json
+config.bat
+node_modules
